@@ -5,7 +5,7 @@ import { useSimulation } from '../lib/SimulationContext';
 import { motion } from 'framer-motion';
 
 export default function OfficeSimulation() {
-  const { agents } = useSimulation();
+  const { agents, focus, focusAgent } = useSimulation();
 
   return (
     <div style={{ 
@@ -36,7 +36,18 @@ export default function OfficeSimulation() {
             initial={{ x: agent.x, y: agent.y, opacity: 0 }}
             animate={{ x: agent.x, y: agent.y, opacity: 1 }}
             transition={{ type: "spring", stiffness: 40, damping: 12, mass: 1.2 }}
+            role="button"
+            tabIndex={0}
+            title={`Show ${agent.name}'s tasks`}
+            onClick={() => focusAgent(agent.id)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                focusAgent(agent.id);
+              }
+            }}
             style={{
+              cursor: 'pointer',
               position: 'absolute',
               top: 0,
               left: 0,
@@ -129,7 +140,9 @@ export default function OfficeSimulation() {
               height: '48px',
               borderRadius: '50%',
               overflow: 'hidden',
-              flexShrink: 0
+              flexShrink: 0,
+              // Ring around the employee whose tasks are open in the side panel
+              boxShadow: focus?.agentId === agent.id ? '0 0 0 3px #3b82f6, 0 0 0 5px white' : undefined
             }}>
               <img src={agent.avatar || '/avatars/robot.png'} alt={agent.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             </div>

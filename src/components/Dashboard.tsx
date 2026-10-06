@@ -6,10 +6,17 @@ import { AgentRole, APIProvider, Agent, TaskItem } from '../lib/types';
 import { UserPlus, Briefcase, Zap, CheckCircle2, ChevronRight, MessageSquare, Terminal, Trash2, Pause, Play, SquareX, ListTree } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import TaskTree from './TaskTree';
-import { OFFICE_CONFIG, ROLE_RANK, indexTasks, getAncestors, getRoot, getTree, projectSlug, similarity } from '../lib/officeConfig';
+import { OFFICE_CONFIG, ROLE_RANK, FINISHED_STATUSES, indexTasks, getAncestors, getRoot, getTree, projectOf, projectNameFromPrompt, slugifyProjectName, similarity, stripGuardrailNote, formatUsage } from '../lib/officeConfig';
+import { buildSystemPrompt, FILE_PATH_PLACEHOLDER, PROJECT_NAME_PLACEHOLDER, REVIEW_TASK_PROMPT } from '../lib/agentPrompt';
+import { buildReport, buildTranscript, REPORT_FILENAME, TRANSCRIPT_FILENAME } from '../lib/report';
+
+/** Delegations more alike than this (0–1 word overlap) count as the same task. */
+const DUPLICATE_SIMILARITY = 0.8;
+
+const PLACEHOLDER_FILENAMES = new Set([FILE_PATH_PLACEHOLDER, 'filename.ext']);
 
 export default function Dashboard() {
-  const { agents, addAgent, removeAgent, setAgentState, updateAgentTokens, enqueueTask, patchTask, updateTaskStatus, clearAllTasks } = useSimulation();
+  const { agents, isLeader, focus, addAgent, removeAgent, setAgentState, updateAgentTokens, enqueueTask, patchTask, updateTaskStatus, clearAllTasks } = useSimulation();
 
   const [isPaused, setIsPaused] = useState(false);
 
@@ -53,6 +60,10 @@ export default function Dashboard() {
   // Background Queue Executor
   const executingTasks = React.useRef(new Set<string>());
 
+  // Always-current snapshot, so a long model call can see what changed while it was waiting
+  const agentsRef = React.useRef(agents);
+  agentsRef.current = agents;
+
   const handleManualAssignment = (agent: Agent, prompt: string) => {
     if (!prompt.trim()) return;
     setActiveTaskAgent(null);
@@ -61,186 +72,330 @@ export default function Dashboard() {
     showNotification(`Task queued for ${agent.name}`);
   };
 
+  const postWorkspace = async (body: Record<string, unknown>) => {
+    const res = await fetch('/api/workspace', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) throw new Error(data.error || `Workspace request failed (${res.status})`);
+    return data;
+  };
+
+  /** Returns `base`, or `base-2`, `base-3`… when a project with that name already exists. */
+  const claimProjectName = async (base: string, taskId: string) => {
+    const taken = new Set<string>();
+    agentsRef.current.forEach(a => a.taskQueue.forEach(t => t.project && taken.add(t.project)));
+
+    for (let n = 1; n <= 20; n++) {
+      const candidate = n === 1 ? base : `${base}-${n}`;
+      if (taken.has(candidate)) continue;
+      try {
+        const res = await fetch(`/api/workspace?project=${candidate}`);
+        const data = await res.json();
+        if (res.ok && !data.exists) return candidate;
+      } catch (e) {
+        break;
+      }
+    }
+    return `${base}-${taskId.slice(0, 4)}`;
+  };
+
+  /** Models sometimes repeat the project folder in front of the path, which would nest the project inside itself. */
+  const normalizeFilename = (filename: string, slug: string) => {
+    let cleaned = filename.trim().replace(/^[`'"]+|[`'"]+$/g, '').replace(/\\/g, '/').replace(/^\.?\/+/, '');
+    for (const prefix of [`workspace/projects/${slug}/`, `projects/${slug}/`, `${slug}/`]) {
+      if (cleaned.startsWith(prefix)) cleaned = cleaned.slice(prefix.length);
+    }
+    return cleaned;
+  };
+
   const executeTask = async (agent: Agent, task: TaskItem) => {
     if (executingTasks.current.has(task.id)) return;
-    executingTasks.current.add(task.id);
 
+    const taskIndex = indexTasks(agents);
+    const rootTask = getRoot(task.id, taskIndex)?.task || task;
+    const isReview = task.kind === 'REVIEW';
+    // A root task that has not run yet starts a new project, which the agent names in its response
+    const namesProject = rootTask.id === task.id && !task.project;
+    let slug = namesProject ? '' : projectOf(rootTask);
+    const ancestors = getAncestors(task.id, taskIndex);
+    const depth = ancestors.length;
+    const tree = getTree(rootTask.id, taskIndex);
+    const treeTokens = tree.reduce((sum, ref) => sum + (ref.task.tokens || 0), 0);
+
+    // Sub-tasks queued before the tree ran out of budget wait for approval instead of running
+    if (task.parentId && !isReview && task.reviewStatus !== 'APPROVED' && treeTokens >= OFFICE_CONFIG.TASK_TREE_TOKEN_BUDGET) {
+      patchTask(agent.id, task.id, {
+        status: 'AWAITING_APPROVAL',
+        reviewStatus: 'PENDING_REVIEW',
+        reviewNote: `Token budget ${OFFICE_CONFIG.TASK_TREE_TOKEN_BUDGET} exhausted.`
+      });
+      return;
+    }
+
+    executingTasks.current.add(task.id);
     setAgentState(agent.id, 'WORKING');
     updateTaskStatus(agent.id, task.id, 'IN_PROGRESS');
-    
+
+    /** True once the task was halted (or its agent removed) while the model was working. */
+    const wasCancelled = () => {
+      const current = agentsRef.current.find(a => a.id === agent.id)?.taskQueue.find(t => t.id === task.id);
+      return !current || current.status === 'CANCELLED';
+    };
+
     try {
-      const taskIndex = indexTasks(agents);
-      const rootTask = getRoot(task.id, taskIndex)?.task || task;
-      const slug = projectSlug(rootTask);
-      const ancestors = getAncestors(task.id, taskIndex);
-      const tree = getTree(rootTask.id, taskIndex);
-      const treeTokens = tree.reduce((sum, ref) => sum + (ref.task.tokens || 0), 0);
-      const mySubtasks = tree.filter(ref => ref.task.parentId === task.id);
-
-      // Fetch existing project files
+      // The real state of the project: what exists, and what is in it
       let existingFiles: string[] = [];
-      try {
-        const res = await fetch(`/api/workspace?project=${slug}`);
-        if (res.ok) {
-          const data = await res.json();
-          existingFiles = data.files || [];
+      let fileContents: Record<string, string> = {};
+      if (slug) {
+        try {
+          const res = await fetch(`/api/workspace?project=${slug}&contents=1`);
+          if (res.ok) {
+            const data = await res.json();
+            existingFiles = data.files || [];
+            fileContents = data.contents || {};
+          }
+        } catch (e) {
+          // ignore
         }
-      } catch (e) {
-        // ignore
       }
 
-      // Build office roster context
-      const roster = agents.filter(a => a.id !== agent.id).map(a => `- ${a.name} (Role: ${a.role}, ID: ${a.id})`).join('\n');
+      // Only offer colleagues this agent is actually allowed to delegate to
+      const canDelegate = !isReview && depth < OFFICE_CONFIG.MAX_DELEGATION_DEPTH;
+      const colleagues = canDelegate
+        ? agents.filter(a => a.id !== agent.id && ROLE_RANK[a.role] > ROLE_RANK[agent.role])
+        : [];
 
-      let systemPrompt = `You are ${agent.name}, the ${agent.role} of the company.\nYour current project workspace is: ${slug}\n`;
-      
-      if (existingFiles.length > 0) {
-        systemPrompt += `\nExisting project files:\n${existingFiles.slice(0, OFFICE_CONFIG.MAX_FILES_IN_PROMPT).map(f => `- ${f}`).join('\n')}\n`;
-      }
-
-      if (roster.length > 0) {
-        systemPrompt += `\nHere are your available colleagues:\n${roster}\n\nIf you need to assign work to them, output your reasoning and then append your assignments using this EXACT format at the end of your message:\n[ASSIGN: their_id] task description [/ASSIGN]\n`;
-      }
-
-      systemPrompt += `\nIf you need to create a document, write code, or save any work to the local project folder, use this EXACT format:\n[FILE: filename.ext]\nfile contents\n[/FILE]\n\nIf you need to initialize a new project, use:\n[SCAFFOLD: flutter] or [SCAFFOLD: node]\n\nFinally, end your response with a summary of the work done for the admin using this EXACT format:\n[SUMMARY] your summary [/SUMMARY]`;
-
-      // Build history context
-      if (agent.taskQueue && agent.taskQueue.length > 0) {
-        const completed = agent.taskQueue.filter(t => t.status === 'COMPLETED').slice(0, 3);
-        const historyText = completed.map(h => `Previous Task: ${h.prompt}\nYour Previous Response: ${h.response?.slice(0, OFFICE_CONFIG.MEMORY_CHARS)}`).join('\n\n');
-        if (historyText) systemPrompt += `\n\nYour Recent Memory:\n${historyText}`;
-      }
+      const systemPrompt = buildSystemPrompt({
+        agent, task, rootTask, parent: ancestors[0], tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents
+      });
 
       const res = await fetch('/api/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: task.prompt, apiProvider: agent.api, systemPrompt })
+        body: JSON.stringify({
+          prompt: stripGuardrailNote(task.prompt),
+          apiProvider: agent.api,
+          systemPrompt,
+          maxTokens: isReview ? OFFICE_CONFIG.REVIEW_MAX_TOKENS : undefined
+        })
       });
       const data = await res.json();
-      
-      if (data.error) {
-        throw new Error(data.error);
+
+      if (!res.ok || data.error) {
+        throw new Error(data.error || `Agent request failed (${res.status})`);
       }
 
       if (data.tokens) {
         updateAgentTokens(agent.id, data.tokens);
       }
 
-      let parsedSummary: string | undefined;
-      const writtenFiles: string[] = [];
+      if (!data.response) {
+        throw new Error('The model returned an empty response.');
+      }
 
-      if (data.response) {
-        updateTaskStatus(agent.id, task.id, 'COMPLETED', data.response);
-        
-        const summaryMatch = data.response.match(/\[SUMMARY\]([\s\S]*?)\[\/SUMMARY\]/i);
-        if (summaryMatch) {
-          parsedSummary = summaryMatch[1].trim();
-        }
+      // Halted while the model was working: discard the result
+      if (wasCancelled()) return;
 
-        // Parse assignments
-        const regex = /\[ASSIGN:\s*([a-zA-Z0-9_-]+)\]([\s\S]*?)\[\/ASSIGN\]/gi;
-        let match;
-        while ((match = regex.exec(data.response)) !== null) {
-          const targetId = match[1];
-          const taskDesc = match[2].trim();
+      const response: string = data.response;
+      const summary = response.match(/\[SUMMARY\]([\s\S]*?)\[\/SUMMARY\]/i)?.[1].trim();
+      const problems: string[] = [];
 
-          const targetAgent = agents.find(a => a.id === targetId);
-          if (targetAgent) {
-            // Apply Guardrails
-            let violation = '';
-            if (ancestors.length >= OFFICE_CONFIG.MAX_DELEGATION_DEPTH) violation = `Max depth ${OFFICE_CONFIG.MAX_DELEGATION_DEPTH} reached.`;
-            else if (mySubtasks.length >= OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK) violation = `Max subtasks ${OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK} reached.`;
-            else if (treeTokens + (data.tokens || 0) >= OFFICE_CONFIG.TASK_TREE_TOKEN_BUDGET) violation = `Token budget ${OFFICE_CONFIG.TASK_TREE_TOKEN_BUDGET} exhausted.`;
-            else if (ROLE_RANK[targetAgent.role] <= ROLE_RANK[agent.role]) violation = `Cannot delegate to equal or higher rank (${targetAgent.role}).`;
-            else if (tree.some(ref => similarity(ref.task.prompt, taskDesc) > 0.8)) violation = `Duplicate task detected.`;
+      if (namesProject) {
+        const proposed = slugifyProjectName(response.match(/\[PROJECT:\s*([^\]\n]+)\]/i)?.[1] || '');
+        const base = proposed && proposed !== PROJECT_NAME_PLACEHOLDER ? proposed : projectNameFromPrompt(task.prompt);
+        slug = await claimProjectName(base, task.id);
+        // Saved on the root task so its sub-tasks (and later reloads) find the same folder
+        patchTask(agent.id, task.id, { project: slug });
+      }
 
-            const status = violation ? 'AWAITING_APPROVAL' : 'PENDING';
-            const finalDesc = violation ? `[GUARDRAIL: ${violation}]\n${taskDesc}` : taskDesc;
-
-            setTimeout(() => {
-              enqueueTask(targetAgent.id, `Task delegated from ${agent.name}:\n${finalDesc}`, agent.name, task.id, status);
-            }, 1000);
-          }
-        }
-
-        // Parse scaffold
+      // Scaffold first, so the files below (and delegated work) land in a finished skeleton
+      if (!isReview) {
+        const kinds = new Set<string>();
         const scaffoldRegex = /\[SCAFFOLD:\s*(flutter|node)\]/gi;
         let scaffoldMatch;
-        while ((scaffoldMatch = scaffoldRegex.exec(data.response)) !== null) {
-          const kind = scaffoldMatch[1].toLowerCase();
-          try {
-            await fetch('/api/workspace', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'scaffold', project: slug, kind })
-            });
-          } catch (e) {
-            console.error("Scaffold error", e);
-          }
+        while ((scaffoldMatch = scaffoldRegex.exec(response)) !== null) {
+          kinds.add(scaffoldMatch[1].toLowerCase());
         }
-
-        // Parse file creations
-        const fileRegex = /\[FILE:\s*([a-zA-Z0-9_.-]+)\]([\s\S]*?)\[\/FILE\]/gi;
-        let fileMatch;
-        while ((fileMatch = fileRegex.exec(data.response)) !== null) {
-          const filename = fileMatch[1];
-          const content = fileMatch[2].trim();
-
+        for (const kind of Array.from(kinds)) {
           try {
-            const saveRes = await fetch('/api/workspace', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'write', project: slug, filename, content })
-            });
-            const saveData = await saveRes.json();
-            if (saveData.path) writtenFiles.push(saveData.path);
-          } catch (err) {
-            console.error("File save error", err);
+            await postWorkspace({ action: 'scaffold', project: slug, kind });
+          } catch (e: any) {
+            problems.push(`Scaffold ${kind}: ${e.message}`);
           }
         }
       }
 
-      patchTask(agent.id, task.id, { 
-        tokens: data.tokens, 
-        summary: parsedSummary, 
-        files: writtenFiles.length > 0 ? writtenFiles : undefined 
+      // Parse file creations (the server validates that each path stays inside the project)
+      const writtenFiles: string[] = [];
+      const fileRegex = /\[FILE:\s*([^\]\n]+?)\s*\]([\s\S]*?)\[\/FILE\]/gi;
+      let fileMatch;
+      let closedFileBlocks = 0;
+      while ((fileMatch = fileRegex.exec(response)) !== null) {
+        closedFileBlocks += 1;
+        const filename = normalizeFilename(fileMatch[1], slug);
+        const content = fileMatch[2].trim();
+        // Models sometimes echo the format example back verbatim
+        if (!filename || PLACEHOLDER_FILENAMES.has(filename.toLowerCase())) continue;
+
+        try {
+          const saved = await postWorkspace({ action: 'write', project: slug, filename, content });
+          if (saved.path && !writtenFiles.includes(saved.path)) writtenFiles.push(saved.path);
+        } catch (e: any) {
+          problems.push(`${filename}: ${e.message}`);
+        }
+      }
+
+      const openedFileBlocks = (response.match(/\[FILE:/gi) || []).length;
+      if (openedFileBlocks > closedFileBlocks) {
+        problems.push(`${openedFileBlocks - closedFileBlocks} file block(s) had no closing [/FILE] tag and were not saved.`);
+      }
+      if (data.truncated) {
+        problems.push('The response reached the length limit and may be incomplete.');
+      }
+
+      if (wasCancelled()) return;
+
+      // Parse assignments (after the files are saved, so delegated work starts from the current project)
+      if (canDelegate) {
+        let spawned = tree.filter(ref => ref.task.parentId === task.id).length;
+        const knownPrompts = tree.map(ref => ref.task.prompt);
+        const proposed: string[] = [];
+        const regex = /\[ASSIGN:\s*([a-zA-Z0-9_-]+)\]([\s\S]*?)\[\/ASSIGN\]/gi;
+        let match;
+        while ((match = regex.exec(response)) !== null) {
+          const targetId = match[1];
+          const taskDesc = match[2].trim();
+          const isDuplicate = (other: string) => similarity(other, taskDesc) > DUPLICATE_SIMILARITY;
+
+          const targetAgent = agents.find(a => a.id === targetId);
+          // The same assignment repeated within one response is simply dropped
+          if (!targetAgent || !taskDesc || proposed.some(isDuplicate)) continue;
+
+          // Apply Guardrails
+          let violation = '';
+          if (spawned >= OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK) violation = `Max subtasks ${OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK} reached.`;
+          else if (treeTokens + (data.tokens || 0) >= OFFICE_CONFIG.TASK_TREE_TOKEN_BUDGET) violation = `Token budget ${OFFICE_CONFIG.TASK_TREE_TOKEN_BUDGET} exhausted.`;
+          else if (ROLE_RANK[targetAgent.role] <= ROLE_RANK[agent.role]) violation = `Cannot delegate to equal or higher rank (${targetAgent.role}).`;
+          else if (knownPrompts.some(isDuplicate)) violation = `Duplicate task detected.`;
+
+          proposed.push(taskDesc);
+          spawned += 1;
+
+          // Link the sub-task to the task that produced it so the board can nest it
+          enqueueTask(
+            targetAgent.id,
+            `Task delegated from ${agent.name}:\n${taskDesc}`,
+            agent.name,
+            task.id,
+            violation ? 'AWAITING_APPROVAL' : 'PENDING',
+            violation ? { reviewStatus: 'PENDING_REVIEW', reviewNote: violation } : undefined
+          );
+        }
+      }
+
+      if (problems.length > 0) {
+        showNotification(`${agent.name}: ${problems.length} problem${problems.length > 1 ? 's' : ''} saving work — see the task details.`);
+      }
+
+      patchTask(agent.id, task.id, {
+        status: 'COMPLETED',
+        response,
+        tokens: data.tokens,
+        cost: typeof data.cost === 'number' ? data.cost : undefined,
+        model: data.model,
+        summary,
+        files: writtenFiles.length > 0 ? writtenFiles : undefined,
+        ...(problems.length > 0 ? { reviewNote: problems.join('\n') } : {})
       });
-
+      setAgentState(agent.id, 'IDLE');
     } catch (e: any) {
-    let isRateLimit = false;
-    if (e && e.message) {
-      isRateLimit = e.message.toLowerCase().includes('429') || e.message.toLowerCase().includes('rate limit');
+      if (wasCancelled()) return;
+
+      const message: string = e?.message || 'Unknown error';
+      const isRateLimit = message.toLowerCase().includes('429') || message.toLowerCase().includes('rate limit');
+      updateTaskStatus(agent.id, task.id, 'FAILED', undefined, message);
+      showNotification(`Task for ${agent.name} failed.${isRateLimit ? ' (Rate Limit Hit)' : ''}`);
+
+      // Send to break on rate limit instead of IDLE
+      setAgentState(agent.id, isRateLimit ? 'BREAK' : 'IDLE');
+    } finally {
+      executingTasks.current.delete(task.id);
     }
-    updateTaskStatus(agent.id, task.id, 'FAILED', undefined, e.message || 'Unknown error');
-    showNotification(`Task for ${agent.name} failed.${isRateLimit ? ' (Rate Limit Hit)' : ''}`);
-    
-    executingTasks.current.delete(task.id);
-    
-    // Send to break on rate limit instead of IDLE
-    if (isRateLimit) {
-      setAgentState(agent.id, 'BREAK');
-      return;
-    }
-  }
+  };
 
-  // Normal execution path (success or non-rate-limit failure)
-  executingTasks.current.delete(task.id);
-  setAgentState(agent.id, 'IDLE');
-};
+  React.useEffect(() => {
+    // Do not pull new tasks if paused, or if another tab is running the office
+    if (isPaused || !isLeader) return;
 
-React.useEffect(() => {
-  if (isPaused) return; // Do not pull new tasks if paused
+    agents.forEach(agent => {
+      // If agent isn't already working on something
+      if (agent.state === 'WORKING') return;
 
-  agents.forEach(agent => {
-    // If agent isn't already working on something
-    if (agent.state !== 'WORKING') {
-      const pendingTask = agent.taskQueue?.find(t => t.status === 'PENDING');
-      if (pendingTask) {
-        executeTask(agent, pendingTask);
+      // Oldest pending task first
+      const nextTask = (agent.taskQueue || [])
+        .filter(t => t.status === 'PENDING')
+        .reduce<TaskItem | undefined>((oldest, t) => (!oldest || t.timestamp < oldest.timestamp ? t : oldest), undefined);
+      if (nextTask) executeTask(agent, nextTask);
+    });
+    // executeTask is re-created each render and reads the same `agents` this effect depends on
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents, isPaused, isLeader]);
+
+  // Wrap up finished projects: one final review once all delegated work is done, then the report.
+  // Only for tasks the user assigned, and only for projects named under the current scheme.
+  const wrappingUp = React.useRef(new Set<string>());
+
+  React.useEffect(() => {
+    if (!isLeader) return;
+    const taskIndex = indexTasks(agents);
+
+    agents.forEach(agent => agent.taskQueue.forEach(root => {
+      if (root.parentId || root.status !== 'COMPLETED' || !root.project || root.report) return;
+
+      const tree = getTree(root.id, taskIndex);
+      if (tree.some(ref => !FINISHED_STATUSES.has(ref.task.status))) return;
+
+      const subtasks = tree.filter(ref => ref.task.id !== root.id);
+      const reviewed = subtasks.some(ref => ref.task.kind === 'REVIEW');
+      const reviewKey = `review:${root.id}`;
+
+      // Several people worked on it: have the owner check the pieces fit together before reporting
+      if (subtasks.some(ref => ref.task.status === 'COMPLETED') && !reviewed) {
+        if (wrappingUp.current.has(reviewKey)) return;
+        wrappingUp.current.add(reviewKey);
+        enqueueTask(agent.id, REVIEW_TASK_PROMPT, 'Office', root.id, 'PENDING', { kind: 'REVIEW' });
+        return;
       }
-    }
-  });
-}, [agents, isPaused]);
+
+      if (wrappingUp.current.has(root.id)) return;
+      wrappingUp.current.add(root.id);
+
+      const rootRef = { task: root, agent };
+      const report = buildReport(rootRef, tree);
+      patchTask(agent.id, root.id, { report });
+      showNotification(`Report ready: ${root.project}`);
+
+      Promise.all([
+        postWorkspace({ action: 'write', project: root.project, filename: REPORT_FILENAME, content: report }),
+        postWorkspace({ action: 'write', project: root.project, filename: TRANSCRIPT_FILENAME, content: buildTranscript(rootRef, tree) }),
+      ]).catch(e => showNotification(`Could not save the report files for ${root.project}: ${e.message}`));
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents, isLeader]);
+
+  // Clicking an employee on the map opens their tasks in the side panel
+  React.useEffect(() => {
+    if (!focus) return;
+    setPanelView('roster');
+    setExpandedAgentId(focus.agentId);
+    const timer = setTimeout(() => {
+      document.getElementById(`agent-row-${focus.agentId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [focus]);
 
 return (
   <div className={styles.dashboard}>
@@ -311,7 +466,7 @@ return (
             <option value="HR">HR</option>
           </select>
           <select value={api} onChange={(e) => setApi(e.target.value as APIProvider)} className={styles.select}>
-            <option value="OpenAI">OpenAI (GPT-4)</option>
+            <option value="OpenAI">OpenAI (GPT-4o mini)</option>
             <option value="Grok">Grok (xAI)</option>
             <option value="Ollama">Ollama (Local)</option>
           </select>
@@ -350,7 +505,7 @@ return (
           <TaskTree 
             agents={agents} 
             onCancel={(agentId, taskId) => updateTaskStatus(agentId, taskId, 'CANCELLED')}
-            onApprove={(agentId, taskId) => updateTaskStatus(agentId, taskId, 'PENDING')}
+            onApprove={(agentId, taskId) => patchTask(agentId, taskId, { status: 'PENDING', reviewStatus: 'APPROVED' })}
           />
         </div>
       ) : (
@@ -358,6 +513,7 @@ return (
         {agents.map(agent => (
           <div
             key={agent.id}
+            id={`agent-row-${agent.id}`}
             className={`${styles.agentItem} ${expandedAgentId === agent.id ? styles.expanded : ''}`}
             onClick={() => setExpandedAgentId(expandedAgentId === agent.id ? null : agent.id)}
           >
@@ -430,7 +586,7 @@ return (
                         <div className={styles.historyHeader}>
                           <span className={styles.taskStatus}>{task.status}</span>
                           <span className={styles.taskAssigner}>
-                            {task.parentId ? 'Sub-task · ' : ''}From: {task.assignedBy}
+                            {task.kind === 'REVIEW' ? 'Final review · ' : task.parentId ? 'Sub-task · ' : ''}From: {task.assignedBy}
                           </span>
                         </div>
                         <div className={styles.historyPrompt}>
@@ -449,6 +605,7 @@ return (
                         <div className={styles.historyFooter}>
                           <span className={styles.historyTime}>
                             {new Date(task.timestamp).toLocaleTimeString()}
+                            {task.tokens ? ` · ${formatUsage(task.tokens, task.cost)}` : ''}
                           </span>
                           {task.status === 'PENDING' && (
                             <button

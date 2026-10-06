@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import db from '../../../lib/db';
+import { getDb } from '../../../lib/db';
 
 const safeParseArray = (value: string): string[] | undefined => {
   try {
@@ -12,6 +12,7 @@ const safeParseArray = (value: string): string[] | undefined => {
 
 export async function GET() {
   try {
+    const db = getDb();
     const agents = db.prepare('SELECT * FROM agents').all() as any[];
     const tasks = db.prepare('SELECT * FROM tasks').all() as any[];
 
@@ -32,9 +33,15 @@ export async function GET() {
           tokens: t.tokens ?? undefined,
           reviewStatus: t.reviewStatus || undefined,
           reviewNote: t.reviewNote || undefined,
+          project: t.project || undefined,
+          cost: t.cost ?? undefined,
+          model: t.model || undefined,
+          kind: t.kind || undefined,
+          report: t.report || undefined,
           error: t.status === 'FAILED' ? t.answer : undefined
         }))
-        .sort((a, b) => a.timestamp - b.timestamp);
+        // Newest first, the same order the client keeps its queue in
+        .sort((a, b) => b.timestamp - a.timestamp);
 
       // Determine current task based on IN_PROGRESS status
       const inProgressTask = agentTasks.find(t => t.status === 'IN_PROGRESS');
@@ -55,6 +62,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    const db = getDb();
     const { agents } = await req.json();
 
     if (!agents) {
@@ -79,8 +87,8 @@ export async function POST(req: NextRequest) {
       `);
 
       const upsertTask = db.prepare(`
-        INSERT INTO tasks (id, agentId, prompt, assignedBy, status, answer, createdAt, parentId, summary, files, tokens, reviewStatus, reviewNote)
-        VALUES (@id, @agentId, @prompt, @assignedBy, @status, @answer, @createdAt, @parentId, @summary, @files, @tokens, @reviewStatus, @reviewNote)
+        INSERT INTO tasks (id, agentId, prompt, assignedBy, status, answer, createdAt, parentId, summary, files, tokens, reviewStatus, reviewNote, project, cost, model, kind, report)
+        VALUES (@id, @agentId, @prompt, @assignedBy, @status, @answer, @createdAt, @parentId, @summary, @files, @tokens, @reviewStatus, @reviewNote, @project, @cost, @model, @kind, @report)
         ON CONFLICT(id) DO UPDATE SET
           status = excluded.status,
           answer = excluded.answer,
@@ -89,7 +97,12 @@ export async function POST(req: NextRequest) {
           files = excluded.files,
           tokens = excluded.tokens,
           reviewStatus = excluded.reviewStatus,
-          reviewNote = excluded.reviewNote
+          reviewNote = excluded.reviewNote,
+          project = COALESCE(excluded.project, tasks.project),
+          cost = excluded.cost,
+          model = excluded.model,
+          kind = COALESCE(excluded.kind, tasks.kind),
+          report = COALESCE(excluded.report, tasks.report)
       `);
 
       for (const agent of agentsList) {
@@ -125,7 +138,12 @@ export async function POST(req: NextRequest) {
               files: task.files ? JSON.stringify(task.files) : null,
               tokens: task.tokens ?? null,
               reviewStatus: task.reviewStatus || null,
-              reviewNote: task.reviewNote || null
+              reviewNote: task.reviewNote || null,
+              project: task.project || null,
+              cost: task.cost ?? null,
+              model: task.model || null,
+              kind: task.kind || null,
+              report: task.report || null
             });
           }
         }
@@ -150,7 +168,7 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'Missing agentId' }, { status: 400 });
     }
 
-    db.prepare('DELETE FROM agents WHERE id = ?').run(agentId);
+    getDb().prepare('DELETE FROM agents WHERE id = ?').run(agentId);
     // Note: Tasks are automatically deleted due to ON DELETE CASCADE in the schema
     
     return NextResponse.json({ success: true });

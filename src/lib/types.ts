@@ -9,6 +9,9 @@ export type AgentRole = 'CEO' | 'Tech Lead' | 'Junior Dev' | 'HR' | 'Designer';
  */
 export type TaskStatus = 'AWAITING_APPROVAL' | 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
+/** REVIEW: the automatic final check of a whole project, queued once all of its sub-tasks are done. */
+export type TaskKind = 'REVIEW';
+
 export type ReviewStatus = 'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED';
 
 export interface TaskItem {
@@ -24,10 +27,19 @@ export interface TaskItem {
   summary?: string;
   /** Workspace-relative paths of files this task wrote. */
   files?: string[];
-  /** Tokens consumed by this task's LLM call. */
+  /** Tokens consumed by this task's LLM call (input + output). */
   tokens?: number;
+  /** Estimated cost of this task in USD, from the model's list price. Missing when the price is unknown. */
+  cost?: number;
+  /** Model that produced the response. */
+  model?: string;
+  kind?: TaskKind;
+  /** Markdown report for the whole task tree. Only set on tasks assigned by the user. */
+  report?: string;
   reviewStatus?: ReviewStatus;
   reviewNote?: string;
+  /** Folder under workspace/projects this task tree works in. Set on the root task once it is named. */
+  project?: string;
 }
 
 export interface Agent {
@@ -48,12 +60,4 @@ export interface Agent {
   workingTicks: number;
   breaksTaken: number;
   taskQueue: TaskItem[];
-}
-
-export interface Task {
-  id: string;
-  description: string;
-  assignedTo?: string;
-  dependsOn?: string; // ID of another task
-  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
 }

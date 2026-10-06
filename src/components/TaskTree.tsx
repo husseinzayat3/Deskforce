@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2, Download, FileText } from 'lucide-react';
 import { Agent, TaskItem, TaskStatus } from '../lib/types';
+import { cleanPrompt, formatUsage, projectOf, sumUsage } from '../lib/officeConfig';
 import styles from './TaskTree.module.css';
 
 interface TaskNode {
@@ -17,10 +18,6 @@ interface TaskTreeProps {
   onApprove: (agentId: string, taskId: string) => void;
 }
 
-const DELEGATION_PREFIX = /^Task delegated from [^:]+:\s*/i;
-
-const cleanPrompt = (prompt: string) => prompt.replace(DELEGATION_PREFIX, '').trim();
-
 const STATUS_LABEL: Record<TaskStatus, string> = {
   AWAITING_APPROVAL: 'Needs Approval',
   PENDING: 'Pending',
@@ -28,6 +25,16 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   COMPLETED: 'Done',
   FAILED: 'Failed',
   CANCELLED: 'Cancelled',
+};
+
+/** Saves text as a file from the browser. */
+const downloadText = (filename: string, text: string) => {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 };
 
 /** Flattens a node's subtree (excluding the node itself). */
@@ -78,6 +85,10 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
     const doneCount = subtree.filter(n => n.task.status === 'COMPLETED').length;
     const pendingInBranch = [node, ...subtree].filter(n => n.task.status === 'PENDING').length;
     const progress = subtree.length ? Math.round((doneCount / subtree.length) * 100) : 0;
+    const isReview = task.kind === 'REVIEW';
+    const usage = formatUsage(task.tokens, task.cost);
+    const branchTotal = sumUsage([task, ...subtree.map(n => n.task)]);
+    const branchUsage = hasChildren ? formatUsage(branchTotal.tokens, branchTotal.cost) : '';
 
     return (
       <li key={task.id} className={styles.nodeWrapper}>
@@ -101,7 +112,7 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
               <span className={styles.toggleSpacer} />
             )}
 
-            <span className={styles.kind}>{depth === 0 ? 'Task' : 'Sub-task'}</span>
+            <span className={styles.kind}>{depth === 0 ? 'Task' : isReview ? 'Review' : 'Sub-task'}</span>
 
             <button
               id={`task-title-${task.id}`}
@@ -109,7 +120,7 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
               onClick={() => toggle(setOpenDetails, task.id)}
               title="Show details"
             >
-              {cleanPrompt(task.prompt).split('\n')[0]}
+              {isReview ? 'Final review of the project' : cleanPrompt(task.prompt).split('\n')[0]}
             </button>
 
             <span className={styles.status}>{STATUS_LABEL[task.status]}</span>
@@ -120,6 +131,7 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
             <span className={styles.assignee}>{agent.name}</span>
             <span className={styles.metaDim}>· {agent.role}</span>
             <span className={styles.metaDim}>· from {task.assignedBy}</span>
+            {usage && <span className={styles.metaDim} title="Tokens used by this task and its estimated cost">· {usage}</span>}
 
             <span className={styles.metaRight}>
               {hasChildren && (
@@ -129,6 +141,31 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
                   </span>
                   <span className={styles.progressText}>{doneCount}/{subtree.length}</span>
                 </span>
+              )}
+
+              {task.report && (
+                <>
+                  <button
+                    id={`task-report-${task.id}`}
+                    className={`${styles.cancelBtn} ${styles.approveBtn}`}
+                    onClick={() => downloadText(`${projectOf(task)}-report.md`, task.report!)}
+                    title="Download the report for this task"
+                  >
+                    <FileText size={11} />
+                    Report
+                  </button>
+                  <a
+                    id={`task-download-${task.id}`}
+                    className={`${styles.cancelBtn} ${styles.approveBtn}`}
+                    href={`/api/workspace?project=${projectOf(task)}&download=1`}
+                    download
+                    title="Download every file of this project, including the report, as a .zip"
+                    style={{ textDecoration: 'none' }}
+                  >
+                    <Download size={11} />
+                    Output (.zip)
+                  </a>
+                </>
               )}
 
               {task.status === 'AWAITING_APPROVAL' ? (
@@ -157,11 +194,24 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
             </span>
           </div>
 
+          {task.status === 'AWAITING_APPROVAL' && task.reviewNote && (
+            <div className={styles.detailError}>{task.reviewNote}</div>
+          )}
+
+          {branchUsage && (
+            <div className={styles.detailTokens} style={{ marginTop: 4 }}>
+              Total with sub-tasks: {branchUsage}
+            </div>
+          )}
+
           {detailsOpen && (
             <div className={styles.details}>
               <div className={styles.detailPrompt}>{cleanPrompt(task.prompt)}</div>
               {task.response && <div className={styles.detailResponse}>{task.response}</div>}
               {task.error && <div className={styles.detailError}>{task.error}</div>}
+              {task.status !== 'AWAITING_APPROVAL' && task.reviewNote && (
+                <div className={styles.detailError}>{task.reviewNote}</div>
+              )}
               {task.summary && (
                 <div className={styles.detailSummary}>
                   <strong>Admin Summary:</strong>
@@ -176,11 +226,19 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
                   </ul>
                 </div>
               )}
-              {task.tokens && (
-                <div className={styles.detailTokens}>
-                  <strong>Tokens used:</strong> {task.tokens}
+              {usage && (
+                <div className={styles.detailTokens} style={{ marginTop: 0 }}>
+                  <strong>Usage:</strong> {usage}{task.model ? ` · ${task.model}` : ''}
                 </div>
               )}
+              {task.report && (
+                <div className={styles.detailResponse}>
+                  <strong>Report</strong>
+                  {'\n\n'}
+                  {task.report}
+                </div>
+              )}
+              {task.project && <div className={styles.detailTime}>Project folder: workspace/projects/{task.project}</div>}
               <div className={styles.detailTime}>{new Date(task.timestamp).toLocaleString()}</div>
             </div>
           )}
