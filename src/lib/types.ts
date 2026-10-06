@@ -17,6 +17,8 @@ export type ReviewStatus = 'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED';
 export interface TaskItem {
   id: string;
   prompt: string;
+  /** Short name given by the manager who delegated the task. Tasks assigned by the user have none. */
+  title?: string;
   response?: string;
   status: TaskStatus;
   timestamp: number;
@@ -38,6 +40,12 @@ export interface TaskItem {
   report?: string;
   reviewStatus?: ReviewStatus;
   reviewNote?: string;
+  /** What the user asked to be changed when sending a finished task back. */
+  feedback?: string;
+  /** Spending limit in USD for the whole task tree. Only set on tasks assigned by the user. */
+  budget?: number;
+  /** When the task last finished successfully. */
+  completedAt?: number;
   /** Folder under workspace/projects this task tree works in. Set on the root task once it is named. */
   project?: string;
 }

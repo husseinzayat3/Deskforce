@@ -18,6 +18,9 @@ const TASK_MIGRATIONS: Record<string, string> = {
   model: 'TEXT',
   kind: 'TEXT',
   report: 'TEXT', // markdown, set on root tasks
+  title: 'TEXT',
+  feedback: 'TEXT',
+  budget: 'REAL', // USD, set on root tasks
 };
 
 const open = () => {
@@ -57,6 +60,19 @@ const open = () => {
       completedAt INTEGER,
       parentId TEXT,
       FOREIGN KEY (agentId) REFERENCES agents (id) ON DELETE CASCADE
+    );
+
+    -- Small key/value store: change counter, pause flag, which process runs the engine
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    -- Notifications from the engine, shown as toasts in the browser
+    CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message TEXT NOT NULL,
+      at INTEGER NOT NULL
     );
   `);
 

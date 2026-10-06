@@ -1,5 +1,5 @@
 import { Agent, TaskItem } from './types';
-import { OFFICE_CONFIG, TaskRef, cleanPrompt } from './officeConfig';
+import { OFFICE_CONFIG, TaskRef, cleanPrompt, taskTitle } from './officeConfig';
 
 export const FILE_PATH_PLACEHOLDER = 'relative/path/to/file';
 export const PROJECT_NAME_PLACEHOLDER = 'short-name';
@@ -17,7 +17,7 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 export const stripTags = (response: string) =>
   response
     .replace(/\[FILE:\s*([^\]\n]+?)\s*\][\s\S]*?\[\/FILE\]/gi, '(saved file: $1)')
-    .replace(/\[ASSIGN:\s*[^\]]+\]([\s\S]*?)\[\/ASSIGN\]/gi, (_match, desc: string) => `(delegated: ${firstLine(desc.trim())})`)
+    .replace(/\[ASSIGN:\s*[^\]|]+(?:\|\s*([^\]\n]*))?\]([\s\S]*?)\[\/ASSIGN\]/gi, (_match, title: string | undefined, desc: string) => `(delegated: ${title?.trim() || firstLine(desc.trim())})`)
     .replace(/\[(?:PROJECT|SCAFFOLD):[^\]\n]*\]/gi, '')
     .replace(/\[\/?SUMMARY\]/gi, '')
     .replace(/\n{3,}/g, '\n\n')
@@ -56,6 +56,8 @@ export interface PromptContext {
   colleagues: Agent[];
   existingFiles: string[];
   fileContents: Record<string, string>;
+  /** Earlier requests on the same project and how they ended, oldest first. */
+  projectHistory: { request: string; outcome: string }[];
 }
 
 /**
@@ -63,7 +65,7 @@ export interface PromptContext {
  * the client's request, the manager's plan, what colleagues already finished, and the real project files.
  */
 export const buildSystemPrompt = (ctx: PromptContext) => {
-  const { agent, task, rootTask, parent, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents } = ctx;
+  const { agent, task, rootTask, parent, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents, projectHistory } = ctx;
   const sections: string[] = [];
 
   sections.push(
@@ -78,6 +80,11 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     : `Project folder: ${slug}\nAll file paths are relative to this folder. Do not prefix paths with the folder name.`
   );
 
+  if (projectHistory.length > 0) {
+    const earlier = projectHistory.map(item => `- Request: ${clip(firstLine(item.request), OFFICE_CONFIG.SUMMARY_CHARS)}\n  Outcome: ${clip(item.outcome, OFFICE_CONFIG.SUMMARY_CHARS)}`);
+    sections.push(`This project already exists. The current request continues it: build on what is there, do not start over.\nEarlier work on this project:\n${earlier.join('\n')}`);
+  }
+
   if (rootTask.id !== task.id) {
     sections.push(`The client's original request, which the whole team is working towards:\n"""\n${cleanPrompt(rootTask.prompt)}\n"""`);
   }
@@ -91,7 +98,7 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     .sort((a, b) => a.task.timestamp - b.task.timestamp)
     .slice(-OFFICE_CONFIG.MAX_PROGRESS_ITEMS)
     .map(ref => {
-      const title = firstLine(cleanPrompt(ref.task.prompt));
+      const title = taskTitle(ref.task);
       if (ref.task.status === 'FAILED') return `- ${ref.agent.name} (${ref.agent.role}) FAILED: ${title}`;
       const summary = clip(ref.task.summary || stripTags(ref.task.response || ''), OFFICE_CONFIG.SUMMARY_CHARS);
       const files = ref.task.files?.length ? ` [files: ${ref.task.files.join(', ')}]` : ' [no files saved]';
@@ -111,6 +118,14 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     );
   } else if (!namesProject) {
     sections.push('The project folder is empty so far.');
+  }
+
+  if (task.feedback) {
+    sections.push(
+      `You already did this task once and the client sent it back. Their feedback:\n"""\n${task.feedback}\n"""` +
+      (task.response ? `\n\nWhat you answered last time:\n"""\n${clip(stripTags(task.response), OFFICE_CONFIG.PLAN_CHARS)}\n"""` : '') +
+      `\n\nDo the task again so that it satisfies the feedback. The files from your first attempt are still in the project: change them rather than starting from nothing.`
+    );
   }
 
   sections.push(
@@ -140,7 +155,7 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
       `- Each assignment must stand on its own: say exactly which files to create or change and what "done" means. Your colleague sees your message, the client's request and the project files, nothing else.\n` +
       `- Give different colleagues different files, so they do not overwrite each other.\n` +
       `- Do not create assignments that only review, research or test without producing files. A final review of the whole project happens automatically.\n\n` +
-      `Append your assignments at the end of your message in this EXACT format:\n[ASSIGN: their_id] task description [/ASSIGN]`
+      `Append your assignments at the end of your message in this EXACT format. The title is a short name for the task, 3 to 7 words, shown on the task board:\n[ASSIGN: their_id | Short title] task description [/ASSIGN]`
     );
   } else {
     sections.push('You cannot delegate this task. Do all of the work yourself.');

@@ -9,8 +9,14 @@ export const OFFICE_CONFIG = {
   MAX_DELEGATION_DEPTH: 2,
   /** Max sub-tasks a single task may spawn. */
   MAX_SUBTASKS_PER_TASK: 4,
-  /** Total tokens a whole task tree (root + all sub-tasks) may consume. */
-  TASK_TREE_TOKEN_BUDGET: 60000,
+  /** Spending limit in USD for a whole task tree (root + all sub-tasks) when the user sets none. */
+  DEFAULT_TASK_BUDGET_USD: 0.5,
+  /** Highest limit the user may set for one task. */
+  MAX_TASK_BUDGET_USD: 100,
+  /** Earlier requests on the same project that a follow-up task is told about. */
+  MAX_HISTORY_ITEMS: 5,
+  /** Files with a missing closing tag that the model is asked to send again, per response. */
+  MAX_FILE_REPAIRS: 3,
   /** How much of a manager's plan is passed down to the people it delegates to. */
   PLAN_CHARS: 2000,
   /** How much of each finished task's summary is shared with the rest of the team. */
@@ -172,3 +178,27 @@ export const sumUsage = (tasks: TaskItem[]) => {
     cost: used.some(t => t.cost === undefined) ? undefined : used.reduce((sum, t) => sum + (t.cost || 0), 0),
   };
 };
+
+const TITLE_WORDS = 8;
+const MAX_TITLE_CHARS = 80;
+
+/** A short title made from the start of a description, for delegations that came without one. */
+export const titleFromDescription = (description: string) => {
+  const words = cleanPrompt(description).split('\n')[0].trim().split(/\s+/);
+  const title = words.slice(0, TITLE_WORDS).join(' ').replace(/[.,;:]+$/, '');
+  return (words.length > TITLE_WORDS ? `${title}…` : title).slice(0, MAX_TITLE_CHARS);
+};
+
+/** What a task is called on the board and in reports. */
+export const taskTitle = (task: TaskItem) => {
+  if (task.kind === 'REVIEW') return 'Final review of the project';
+  return task.title || cleanPrompt(task.prompt).split('\n')[0].trim();
+};
+
+/** Spending limit of a task tree in USD. */
+export const budgetOf = (root: TaskItem) => root.budget ?? OFFICE_CONFIG.DEFAULT_TASK_BUDGET_USD;
+
+/** What a tree has cost so far. Tasks on models without a known price count as free. */
+export const spentOn = (tree: TaskRef[]) => tree.reduce((sum, ref) => sum + (ref.task.cost || 0), 0);
+
+export const formatBudget = (usd: number) => `$${usd.toFixed(2)}`;

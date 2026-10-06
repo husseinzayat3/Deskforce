@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2, Download, FileText } from 'lucide-react';
+import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2, Download, FileText, RotateCcw, Pencil, FolderPlus, Send, X } from 'lucide-react';
 import { Agent, TaskItem, TaskStatus } from '../lib/types';
-import { cleanPrompt, formatUsage, projectOf, sumUsage } from '../lib/officeConfig';
+import { OFFICE_CONFIG, FINISHED_STATUSES, budgetOf, cleanPrompt, formatBudget, formatUsage, projectOf, sumUsage, taskTitle } from '../lib/officeConfig';
 import styles from './TaskTree.module.css';
 
 interface TaskNode {
@@ -16,6 +16,15 @@ interface TaskTreeProps {
   agents: Agent[];
   onCancel: (agentId: string, taskId: string) => void;
   onApprove: (agentId: string, taskId: string) => void;
+  onRetry: (taskId: string) => void;
+  onRevise: (taskId: string, note: string) => void;
+  onContinue: (agentId: string, project: string, prompt: string, budget?: number) => void;
+}
+
+/** The one-line form open under a task: feedback for a revision, or a new request for the same project. */
+interface Composer {
+  taskId: string;
+  mode: 'revise' | 'continue';
 }
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
@@ -41,7 +50,16 @@ const downloadText = (filename: string, text: string) => {
 const descendants = (node: TaskNode): TaskNode[] =>
   node.children.flatMap(c => [c, ...descendants(c)]);
 
-export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps) {
+export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevise, onContinue }: TaskTreeProps) {
+  const [composer, setComposer] = useState<Composer | null>(null);
+  const [composerText, setComposerText] = useState('');
+  const [composerBudget, setComposerBudget] = useState('');
+
+  const openComposer = (taskId: string, mode: Composer['mode']) => {
+    setComposer(composer?.taskId === taskId && composer.mode === mode ? null : { taskId, mode });
+    setComposerText('');
+    setComposerBudget('');
+  };
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [openDetails, setOpenDetails] = useState<Set<string>>(new Set());
 
@@ -89,6 +107,16 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
     const usage = formatUsage(task.tokens, task.cost);
     const branchTotal = sumUsage([task, ...subtree.map(n => n.task)]);
     const branchUsage = hasChildren ? formatUsage(branchTotal.tokens, branchTotal.cost) : '';
+    const finished = FINISHED_STATUSES.has(task.status);
+    const composing = composer?.taskId === task.id ? composer.mode : null;
+
+    const submitComposer = () => {
+      const text = composerText.trim();
+      if (!text || !composing) return;
+      if (composing === 'revise') onRevise(task.id, text);
+      else onContinue(agent.id, task.project!, text, Number(composerBudget) > 0 ? Number(composerBudget) : undefined);
+      setComposer(null);
+    };
 
     return (
       <li key={task.id} className={styles.nodeWrapper}>
@@ -120,7 +148,7 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
               onClick={() => toggle(setOpenDetails, task.id)}
               title="Show details"
             >
-              {isReview ? 'Final review of the project' : cleanPrompt(task.prompt).split('\n')[0]}
+              {taskTitle(task)}
             </button>
 
             <span className={styles.status}>{STATUS_LABEL[task.status]}</span>
@@ -168,6 +196,42 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
                 </>
               )}
 
+              {(task.status === 'FAILED' || task.status === 'CANCELLED') && (
+                <button
+                  id={`task-retry-${task.id}`}
+                  className={`${styles.cancelBtn} ${styles.approveBtn}`}
+                  onClick={() => onRetry(task.id)}
+                  title="Put this task back in the queue"
+                >
+                  <RotateCcw size={11} />
+                  Retry
+                </button>
+              )}
+
+              {task.status === 'COMPLETED' && !isReview && (
+                <button
+                  id={`task-revise-${task.id}`}
+                  className={styles.cancelBtn}
+                  onClick={() => openComposer(task.id, 'revise')}
+                  title="Send this task back with your feedback"
+                >
+                  <Pencil size={11} />
+                  Request changes
+                </button>
+              )}
+
+              {depth === 0 && finished && task.project && (
+                <button
+                  id={`task-continue-${task.id}`}
+                  className={`${styles.cancelBtn} ${styles.approveBtn}`}
+                  onClick={() => openComposer(task.id, 'continue')}
+                  title="Assign a new request that keeps working in this project's folder"
+                >
+                  <FolderPlus size={11} />
+                  Continue project
+                </button>
+              )}
+
               {task.status === 'AWAITING_APPROVAL' ? (
                 <button
                   id={`task-approve-${task.id}`}
@@ -194,13 +258,57 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
             </span>
           </div>
 
+          {composing && (
+            <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}>
+              <input
+                autoFocus
+                type="text"
+                aria-label={composing === 'revise' ? 'What should be changed' : 'New request for this project'}
+                placeholder={composing === 'revise' ? 'What should be changed?' : `New request for ${task.project}…`}
+                value={composerText}
+                onChange={e => setComposerText(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') submitComposer();
+                  if (e.key === 'Escape') setComposer(null);
+                }}
+                style={{ flex: 1, minWidth: 0, fontSize: 11, padding: '4px 8px', border: '1px solid #cbd5e1', borderRadius: 4 }}
+              />
+              {composing === 'continue' && (
+                <input
+                  type="number"
+                  min="0.01"
+                  max={OFFICE_CONFIG.MAX_TASK_BUDGET_USD}
+                  step="0.01"
+                  aria-label="Budget in US dollars"
+                  title={`Spending limit in US dollars. Leave empty for ${formatBudget(OFFICE_CONFIG.DEFAULT_TASK_BUDGET_USD)}.`}
+                  placeholder={`$ ${OFFICE_CONFIG.DEFAULT_TASK_BUDGET_USD.toFixed(2)}`}
+                  value={composerBudget}
+                  onChange={e => setComposerBudget(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') submitComposer();
+                    if (e.key === 'Escape') setComposer(null);
+                  }}
+                  style={{ width: 64, fontSize: 11, padding: '4px 6px', border: '1px solid #cbd5e1', borderRadius: 4 }}
+                />
+              )}
+              <button className={`${styles.cancelBtn} ${styles.approveBtn}`} onClick={submitComposer} title={composing === 'revise' ? 'Send back' : 'Assign'}>
+                <Send size={11} />
+                {composing === 'revise' ? 'Send back' : 'Assign'}
+              </button>
+              <button className={styles.cancelBtn} onClick={() => setComposer(null)} aria-label="Close">
+                <X size={11} />
+              </button>
+            </div>
+          )}
+
           {task.status === 'AWAITING_APPROVAL' && task.reviewNote && (
             <div className={styles.detailError}>{task.reviewNote}</div>
           )}
 
-          {branchUsage && (
+          {(branchUsage || (depth === 0 && usage)) && (
             <div className={styles.detailTokens} style={{ marginTop: 4 }}>
-              Total with sub-tasks: {branchUsage}
+              {branchUsage && <>Total with sub-tasks: {branchUsage}</>}
+              {depth === 0 && <>{branchUsage ? ' · ' : ''}Budget: ${(branchTotal.cost || 0).toFixed(4)} of {formatBudget(budgetOf(task))}</>}
             </div>
           )}
 
@@ -209,6 +317,12 @@ export default function TaskTree({ agents, onCancel, onApprove }: TaskTreeProps)
               <div className={styles.detailPrompt}>{cleanPrompt(task.prompt)}</div>
               {task.response && <div className={styles.detailResponse}>{task.response}</div>}
               {task.error && <div className={styles.detailError}>{task.error}</div>}
+              {task.feedback && (
+                <div className={styles.detailSummary}>
+                  <strong>{task.reviewStatus === 'CHANGES_REQUESTED' ? 'Changes requested:' : 'Redone after your feedback:'}</strong>
+                  <p>{task.feedback}</p>
+                </div>
+              )}
               {task.status !== 'AWAITING_APPROVAL' && task.reviewNote && (
                 <div className={styles.detailError}>{task.reviewNote}</div>
               )}

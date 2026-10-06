@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
-import { estimateCost } from '../../../lib/officeConfig';
+import { APIProvider } from '../types';
+import { estimateCost } from '../officeConfig';
 
 const DEFAULT_MAX_TOKENS = 4000;
 /** Upper bound on a single model call, whatever the caller asks for. */
@@ -17,7 +17,7 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
 /** Ollama's default context window is small enough to silently cut off the project context. */
 const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX) || 8192;
 
-type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 interface Completion {
   text: string;
@@ -29,8 +29,26 @@ interface Completion {
 
 type ModelCall = (messages: ChatMessage[]) => Promise<Completion>;
 
-/** A provider that could not be reached or answered with an error; reported as a failed task. */
-class UpstreamError extends Error {}
+export interface ModelRequest {
+  provider: APIProvider;
+  prompt: string;
+  systemPrompt?: string;
+  /** Earlier turns of the same conversation, placed before `prompt`. */
+  history?: ChatMessage[];
+  maxTokens?: number;
+}
+
+export interface ModelResult {
+  response: string;
+  /** Input + output tokens. */
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+  /** Estimated USD; undefined when the model has no known price. */
+  cost: number | undefined;
+  truncated: boolean;
+}
 
 const openAiCompatible = (client: OpenAI, model: string, maxTokens: number): ModelCall => async messages => {
   const completion = await client.chat.completions.create({ messages, model, max_tokens: maxTokens });
@@ -57,11 +75,11 @@ const ollama = (maxTokens: number): ModelCall => async messages => {
       })
     });
   } catch (e: any) {
-    throw new UpstreamError(`Cannot reach Ollama at ${OLLAMA_URL}. Is it running? (${e.message})`);
+    throw new Error(`Cannot reach Ollama at ${OLLAMA_URL}. Is it running? (${e.message})`);
   }
 
   if (!res.ok) {
-    throw new UpstreamError(`Ollama (${OLLAMA_MODEL}) failed: ${res.status} ${await res.text()}`);
+    throw new Error(`Ollama (${OLLAMA_MODEL}) failed: ${res.status} ${await res.text()}`);
   }
 
   const data = await res.json();
@@ -91,56 +109,46 @@ const completeFully = async (call: ModelCall, messages: ChatMessage[]): Promise<
   return total;
 };
 
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const { prompt, apiProvider, systemPrompt } = body;
+/** Runs one task prompt on the employee's provider. Throws when the provider fails or cannot be reached. */
+export const runModel = async ({ provider, prompt, systemPrompt, history, maxTokens }: ModelRequest): Promise<ModelResult> => {
+  const limit = Math.min(Math.max(Math.floor(Number(maxTokens)) || DEFAULT_MAX_TOKENS, 1), MAX_TOKENS_LIMIT);
 
-    if (typeof prompt !== 'string' || !prompt.trim()) {
-      return NextResponse.json({ error: 'Missing prompt' }, { status: 400 });
-    }
+  const messages: ChatMessage[] = [];
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+  if (history) messages.push(...history);
+  messages.push({ role: 'user', content: prompt });
 
-    const maxTokens = Math.min(Math.max(Math.floor(Number(body.maxTokens)) || DEFAULT_MAX_TOKENS, 1), MAX_TOKENS_LIMIT);
+  let model: string;
+  let call: ModelCall | null;
 
-    const messages: ChatMessage[] = [];
-    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
-    messages.push({ role: 'user', content: prompt });
-
-    let model: string;
-    let call: ModelCall | null;
-
-    if (apiProvider === 'Grok') {
-      const apiKey = process.env.GROK_API_KEY;
-      model = GROK_MODEL;
-      call = apiKey ? openAiCompatible(new OpenAI({ apiKey, baseURL: 'https://api.x.ai/v1' }), model, maxTokens) : null;
-    } else if (apiProvider === 'OpenAI') {
-      const apiKey = process.env.OPENAI_API_KEY;
-      model = OPENAI_MODEL;
-      call = apiKey ? openAiCompatible(new OpenAI({ apiKey }), model, maxTokens) : null;
-    } else if (apiProvider === 'Ollama') {
-      model = OLLAMA_MODEL;
-      call = ollama(maxTokens);
-    } else {
-      return NextResponse.json({ error: `Unknown API provider: ${apiProvider}` }, { status: 400 });
-    }
-
-    // No key configured: answer with a mock so the interface can be explored for free
-    if (!call) {
-      return NextResponse.json({ response: `[Mock ${apiProvider} Response] ${prompt}`, tokens: 15, inputTokens: 10, outputTokens: 5, model: 'mock', cost: 0, truncated: false });
-    }
-
-    const result = await completeFully(call, messages);
-
-    return NextResponse.json({
-      response: result.text,
-      tokens: result.inputTokens + result.outputTokens,
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
-      model,
-      cost: estimateCost(apiProvider, model, result.inputTokens, result.outputTokens) ?? null,
-      truncated: result.truncated,
-    });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: error instanceof UpstreamError ? 502 : 500 });
+  if (provider === 'Grok') {
+    const apiKey = process.env.GROK_API_KEY;
+    model = GROK_MODEL;
+    call = apiKey ? openAiCompatible(new OpenAI({ apiKey, baseURL: 'https://api.x.ai/v1' }), model, limit) : null;
+  } else if (provider === 'OpenAI') {
+    const apiKey = process.env.OPENAI_API_KEY;
+    model = OPENAI_MODEL;
+    call = apiKey ? openAiCompatible(new OpenAI({ apiKey }), model, limit) : null;
+  } else if (provider === 'Ollama') {
+    model = OLLAMA_MODEL;
+    call = ollama(limit);
+  } else {
+    throw new Error(`Unknown API provider: ${provider}`);
   }
-}
+
+  // No key configured: answer with a mock so the interface can be explored for free
+  if (!call) {
+    return { response: `[Mock ${provider} Response] ${prompt}`, tokens: 15, inputTokens: 10, outputTokens: 5, model: 'mock', cost: 0, truncated: false };
+  }
+
+  const result = await completeFully(call, messages);
+  return {
+    response: result.text,
+    tokens: result.inputTokens + result.outputTokens,
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+    model,
+    cost: estimateCost(provider, model, result.inputTokens, result.outputTokens),
+    truncated: result.truncated,
+  };
+};

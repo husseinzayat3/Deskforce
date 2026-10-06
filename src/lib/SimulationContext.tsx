@@ -1,25 +1,37 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { Agent, AgentState, TaskItem, TaskStatus } from './types';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Agent, AgentState } from './types';
 
 type NewAgent = Pick<Agent, 'name' | 'role' | 'api' | 'avatar'>;
 
+interface Notification {
+  id: string;
+  message: string;
+}
+
 interface SimulationContextType {
+  /** Employees and their tasks as the server reports them, placed on the map by this browser. */
   agents: Agent[];
-  /** False while another browser tab is running this office. */
-  isLeader: boolean;
+  /** True while the server is not handing out new tasks. */
+  paused: boolean;
+  notifications: Notification[];
+  notify: (message: string) => void;
   /** Employee last clicked on the map. `at` changes on every click, so clicking the same one again still counts. */
   focus: { agentId: string; at: number } | null;
   focusAgent: (agentId: string) => void;
   addAgent: (agent: NewAgent) => void;
   removeAgent: (agentId: string) => void;
-  updateAgentTokens: (agentId: string, tokens: number) => void;
-  setAgentState: (agentId: string, state: AgentState) => void;
-  enqueueTask: (agentId: string, prompt: string, assignedBy: string, parentId?: string, status?: TaskStatus, extra?: Partial<TaskItem>) => string;
-  patchTask: (agentId: string, taskId: string, patch: Partial<TaskItem>) => void;
-  updateTaskStatus: (agentId: string, taskId: string, status: TaskStatus, response?: string, error?: string) => void;
-  clearAllTasks: () => void;
+  /** `budget`: spending limit in USD. `project`: continue an existing project instead of starting a new one. */
+  assignTask: (agentId: string, prompt: string, options?: { budget?: number; project?: string }) => void;
+  /** Queue a failed or cancelled task again. */
+  retryTask: (taskId: string) => void;
+  /** Send a finished task back with feedback. */
+  reviseTask: (taskId: string, note: string) => void;
+  cancelTask: (taskId: string) => void;
+  approveTask: (taskId: string) => void;
+  haltAll: () => void;
+  setPaused: (paused: boolean) => void;
 }
 
 const SimulationContext = createContext<SimulationContextType | undefined>(undefined);
@@ -40,20 +52,28 @@ export const POI = {
 
 const ENTRANCE = { x: 500, y: 900 };
 
-/** Only one browser tab may run the office, otherwise every tab would execute the same queue. */
-const OFFICE_LOCK = 'my-office-simulation';
-
+const POLL_MS = 1000;
 const TICK_MS = 1000;
-const SAVE_MS = 2000;
+const NOTIFICATION_MS = 5000;
 const IDLE_BEFORE_BREAK_MS = 30_000;
 const MAX_BREAKS_PER_IDLE_STRETCH = 2;
-/** Chance per tick that an agent on a break heads back to the desk. */
+/** Chance per tick that an employee on a break heads back to the desk. */
 const BREAK_RETURN_CHANCE = 0.02;
 
-const ON_BREAK = new Set<AgentState>(['COFFEE', 'TOILET', 'BREAK']);
-const UNFINISHED = new Set<TaskStatus>(['AWAITING_APPROVAL', 'PENDING', 'IN_PROGRESS']);
+/**
+ * Where an employee is on the map and what they appear to be doing.
+ * The server only knows working / not working; breaks and walking are decoration added by each browser.
+ */
+interface Visual {
+  state: AgentState;
+  x: number;
+  y: number;
+  targetX: number;
+  targetY: number;
+  breaksTaken: number;
+  idleSince: number;
+}
 
-const newId = () => Math.random().toString(36).slice(2, 11);
 const jitter = (range: number) => Math.random() * range - range / 2;
 
 const deskFor = (agent: Agent, all: Agent[]) => {
@@ -62,267 +82,189 @@ const deskFor = (agent: Agent, all: Agent[]) => {
   return desks[index % desks.length];
 };
 
-const destinationFor = (agent: Agent, state: AgentState, all: Agent[]) => {
-  if (state === 'COFFEE') return { x: POI.COFFEE.x + jitter(40), y: POI.COFFEE.y + jitter(40) };
-  if (state === 'TOILET') return { x: POI.TOILET.x + jitter(40), y: POI.TOILET.y + jitter(40) };
-  if (state === 'BREAK') return { x: POI.BREAK_ROOM.x + jitter(100), y: POI.BREAK_ROOM.y + jitter(100) };
-  return deskFor(agent, all);
+const at = (visual: Visual, state: AgentState, spot: { x: number; y: number }): Visual =>
+  ({ ...visual, state, x: spot.x, y: spot.y, targetX: spot.x, targetY: spot.y });
+
+const onBreak = (visual: Visual, state: 'COFFEE' | 'TOILET' | 'BREAK'): Visual => {
+  const spot = state === 'COFFEE'
+    ? { x: POI.COFFEE.x + jitter(40), y: POI.COFFEE.y + jitter(40) }
+    : state === 'TOILET'
+      ? { x: POI.TOILET.x + jitter(40), y: POI.TOILET.y + jitter(40) }
+      : { x: POI.BREAK_ROOM.x + jitter(100), y: POI.BREAK_ROOM.y + jitter(100) };
+  return { ...at(visual, state, spot), breaksTaken: visual.breaksTaken + 1 };
 };
 
-/** Switch state and send the agent to wherever that state happens (the map animates the walk). */
-const moveTo = (agent: Agent, state: AgentState, all: Agent[]): Agent => {
-  const { x, y } = destinationFor(agent, state, all);
-  return { ...agent, state, x, y, targetX: x, targetY: y };
-};
+/**
+ * Advances the map by one step. Returns the same object when nothing moved, so React can skip the render.
+ * `seated`: first load, employees start at their desks instead of walking in.
+ * `timed`: called by the clock rather than by new server data, so chance-based moves may happen.
+ */
+const stepVisuals = (prev: Record<string, Visual>, agents: Agent[], now: number, seated: boolean, timed: boolean) => {
+  const next: Record<string, Visual> = {};
+  let changed = Object.keys(prev).length !== agents.length;
 
-const isWalking = (agent: Agent) => agent.x !== agent.targetX || agent.y !== agent.targetY;
+  for (const agent of agents) {
+    const desk = deskFor(agent, agents);
+    const before = prev[agent.id];
+    let visual = before;
 
-export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [tabRole, setTabRole] = useState<'pending' | 'leader' | 'follower'>('pending');
-  const isLeader = tabRole === 'leader';
-  const [focus, setFocus] = useState<{ agentId: string; at: number } | null>(null);
-  const focusAgent = (agentId: string) => setFocus({ agentId, at: Date.now() });
-
-  const agentsRef = useRef<Agent[]>(agents);
-  const loadedRef = useRef(false);
-  const lastSavedRef = useRef<Agent[] | null>(null);
-  const idleSinceRef = useRef(new Map<string, number>());
-
-  useEffect(() => {
-    agentsRef.current = agents;
-  }, [agents]);
-
-  // Claim the office for this tab; other tabs wait until it is closed
-  useEffect(() => {
-    if (typeof navigator === 'undefined' || !navigator.locks) {
-      setTabRole('leader');
-      return;
+    if (!visual) {
+      const spot = seated ? desk : ENTRANCE;
+      visual = { state: 'IDLE', x: spot.x, y: spot.y, targetX: desk.x, targetY: desk.y, breaksTaken: 0, idleSince: now };
+    } else if (agent.state === 'WORKING') {
+      if (visual.state !== 'WORKING' || visual.x !== desk.x || visual.y !== desk.y) {
+        visual = { ...at(visual, 'WORKING', desk), breaksTaken: 0 };
+      }
+    } else if (visual.state === 'WORKING') {
+      // Just finished: straight on to the next task, or a break once the queue is empty
+      visual = agent.taskQueue.some(t => t.status === 'PENDING')
+        ? { ...visual, state: 'IDLE', idleSince: now }
+        : onBreak({ ...visual, breaksTaken: 0 }, Math.random() < 0.5 ? 'BREAK' : 'COFFEE');
+    } else if (visual.state === 'IDLE') {
+      if (visual.targetX !== desk.x || visual.targetY !== desk.y) {
+        visual = { ...visual, targetX: desk.x, targetY: desk.y };
+      } else if (visual.x !== desk.x || visual.y !== desk.y) {
+        if (timed) visual = at(visual, 'IDLE', desk);
+      } else if (now - visual.idleSince > IDLE_BEFORE_BREAK_MS && visual.breaksTaken < MAX_BREAKS_PER_IDLE_STRETCH) {
+        const r = Math.random();
+        visual = onBreak(visual, r < 0.2 ? 'TOILET' : r < 0.6 ? 'COFFEE' : 'BREAK');
+      }
+    } else if (timed && Math.random() < BREAK_RETURN_CHANCE) {
+      visual = { ...at(visual, 'IDLE', desk), idleSince: now };
     }
 
-    let cancelled = false;
-    let release: (() => void) | undefined;
-    const abort = new AbortController();
+    if (visual !== before) changed = true;
+    next[agent.id] = visual;
+  }
 
-    // Holding the lock = keeping this promise pending
-    const hold = () => {
-      if (cancelled) return Promise.resolve();
-      return new Promise<void>(resolve => {
-        release = resolve;
-        setTabRole('leader');
-      });
-    };
+  return changed ? next : prev;
+};
 
-    (async () => {
-      const gotIt = await navigator.locks.request(OFFICE_LOCK, { ifAvailable: true }, async lock => {
-        if (!lock) return false;
-        await hold();
-        return true;
-      });
-      if (gotIt || cancelled) return;
-      setTabRole('follower');
-      await navigator.locks.request(OFFICE_LOCK, { signal: abort.signal }, hold);
-    })().catch(() => undefined);
+export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [serverAgents, setServerAgents] = useState<Agent[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [paused, setPausedState] = useState(false);
+  const [visuals, setVisuals] = useState<Record<string, Visual>>({});
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [focus, setFocus] = useState<{ agentId: string; at: number } | null>(null);
 
-    return () => {
-      cancelled = true;
-      abort.abort();
-      release?.();
-    };
+  const serverAgentsRef = useRef(serverAgents);
+  const seatedRef = useRef(false);
+  const versionRef = useRef<string | null>(null);
+  const lastEventRef = useRef<number | null>(null);
+  // Responses can arrive out of order; only the newest request may update the state
+  const requestSeq = useRef(0);
+  const appliedSeq = useRef(0);
+  const polling = useRef(false);
+
+  useEffect(() => {
+    serverAgentsRef.current = serverAgents;
+  }, [serverAgents]);
+
+  const notify = useCallback((message: string) => {
+    const id = Math.random().toString();
+    setNotifications(prev => [...prev, { id, message }]);
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }, NOTIFICATION_MS);
   }, []);
 
-  // Load from SQLite database once this tab runs the office
+  const focusAgent = useCallback((agentId: string) => setFocus({ agentId, at: Date.now() }), []);
+
+  /** Takes over what the server sent, unless a newer answer was applied already. */
+  const apply = useCallback((seq: number, data: any) => {
+    if (seq < appliedSeq.current) return false;
+    appliedSeq.current = seq;
+    if (Array.isArray(data.agents)) setServerAgents(data.agents);
+    if (typeof data.version === 'string') versionRef.current = data.version;
+    setPausedState(Boolean(data.paused));
+    setLoaded(true);
+    return true;
+  }, []);
+
+  // The server runs the office; this tab only watches it
   useEffect(() => {
-    if (!isLeader) return;
-    let stale = false;
+    const poll = async () => {
+      if (polling.current) return;
+      polling.current = true;
+      const seq = ++requestSeq.current;
+      try {
+        const params = new URLSearchParams();
+        if (versionRef.current !== null) params.set('version', versionRef.current);
+        if (lastEventRef.current !== null) params.set('afterEvent', String(lastEventRef.current));
+        const res = await fetch(`/api/office?${params}`, { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `Office request failed (${res.status})`);
 
-    fetch('/api/db')
-      .then(res => res.json())
-      .then(data => {
-        if (stale || !Array.isArray(data.agents) || data.agents.length === 0) return;
-        const loaded: Agent[] = data.agents;
-        // Nothing is running right after a (re)load: interrupted work goes back to the queue
-        setAgents(loaded.map(a => {
-          const taskQueue = a.taskQueue.map(t => t.status === 'IN_PROGRESS' ? { ...t, status: 'PENDING' as TaskStatus } : t);
-          if (ON_BREAK.has(a.state)) return { ...a, taskQueue };
-          const desk = deskFor(a, loaded);
-          return { ...a, taskQueue, state: a.state === 'WORKING' ? 'IDLE' : a.state, targetX: desk.x, targetY: desk.y };
-        }));
-      })
-      .catch(e => console.error("Failed to load db", e))
-      .finally(() => {
-        if (!stale) loadedRef.current = true;
-      });
-
-    return () => {
-      stale = true;
+        apply(seq, data);
+        (data.events || []).forEach((event: { message: string }) => notify(event.message));
+        if (typeof data.lastEventId === 'number') lastEventRef.current = data.lastEventId;
+      } catch (e) {
+        console.error('Failed to load the office', e);
+      } finally {
+        polling.current = false;
+      }
     };
-  }, [isLeader]);
 
-  // Save to SQLite database when something changed
-  useEffect(() => {
-    if (!isLeader) return;
-    const interval = setInterval(() => {
-      const snapshot = agentsRef.current;
-      if (!loadedRef.current || snapshot === lastSavedRef.current) return;
-      fetch('/api/db', {
+    poll();
+    const interval = setInterval(poll, POLL_MS);
+    return () => clearInterval(interval);
+  }, [apply, notify]);
+
+  /** Sends a command to the server and shows the state it answers with. */
+  const send = useCallback(async (body: Record<string, unknown>) => {
+    const seq = ++requestSeq.current;
+    try {
+      const res = await fetch('/api/office', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agents: snapshot })
-      })
-        .then(res => {
-          if (res.ok) lastSavedRef.current = snapshot;
-        })
-        .catch(e => console.error("Failed to save db", e));
-    }, SAVE_MS);
-    return () => clearInterval(interval);
-  }, [isLeader]);
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `Office request failed (${res.status})`);
+      apply(seq, data);
+    } catch (e: any) {
+      notify(e.message || 'The office server could not be reached.');
+    }
+  }, [apply, notify]);
 
-  const addAgent = (agentData: NewAgent) => {
-    setAgents(prev => {
-      const newAgent: Agent = {
-        ...agentData,
-        id: newId(),
-        state: 'IDLE',
-        x: ENTRANCE.x,
-        y: ENTRANCE.y,
-        targetX: ENTRANCE.x,
-        targetY: ENTRANCE.y,
-        tokensUsed: 0,
-        currentTask: null,
-        idleTicks: 0,
-        workingTicks: 0,
-        breaksTaken: 0,
-        taskQueue: [],
-      };
-      // Spawn at the entrance; the simulation loop walks them to their desk
-      const desk = deskFor(newAgent, [...prev, newAgent]);
-      return [...prev, { ...newAgent, targetX: desk.x, targetY: desk.y }];
-    });
-  };
+  const addAgent = useCallback((agent: NewAgent) => { send({ action: 'hire', ...agent }); }, [send]);
+  const removeAgent = useCallback((agentId: string) => { send({ action: 'remove', agentId }); }, [send]);
+  const assignTask = useCallback((agentId: string, prompt: string, options?: { budget?: number; project?: string }) => { send({ action: 'assign', agentId, prompt, ...options }); }, [send]);
+  const retryTask = useCallback((taskId: string) => { send({ action: 'retry', taskId }); }, [send]);
+  const reviseTask = useCallback((taskId: string, note: string) => { send({ action: 'revise', taskId, note }); }, [send]);
+  const cancelTask = useCallback((taskId: string) => { send({ action: 'cancel', taskId }); }, [send]);
+  const approveTask = useCallback((taskId: string) => { send({ action: 'approve', taskId }); }, [send]);
+  const haltAll = useCallback(() => { send({ action: 'halt' }); }, [send]);
+  const setPaused = useCallback((value: boolean) => { send({ action: 'pause', paused: value }); }, [send]);
 
-  const removeAgent = (agentId: string) => {
-    setAgents(prev => prev.filter(a => a.id !== agentId));
-    fetch(`/api/db?agentId=${agentId}`, { method: 'DELETE' }).catch(console.error);
-  };
-
-  const updateAgentTokens = (agentId: string, tokens: number) => {
-    setAgents(prev => prev.map(a => a.id === agentId ? { ...a, tokensUsed: a.tokensUsed + tokens } : a));
-  };
-
-  const enqueueTask = (agentId: string, prompt: string, assignedBy: string, parentId?: string, status: TaskStatus = 'PENDING', extra?: Partial<TaskItem>) => {
-    const taskId = newId();
-    setAgents(prev => prev.map(a => a.id === agentId ? {
-      ...a,
-      taskQueue: [{ ...extra, id: taskId, prompt, status, timestamp: Date.now(), assignedBy, parentId }, ...a.taskQueue]
-    } : a));
-    return taskId;
-  };
-
-  const patchTask = (agentId: string, taskId: string, patch: Partial<TaskItem>) => {
-    setAgents(prev => prev.map(a => a.id === agentId ? {
-      ...a,
-      taskQueue: a.taskQueue.map(t => t.id === taskId ? { ...t, ...patch } : t)
-    } : a));
-  };
-
-  const updateTaskStatus = (agentId: string, taskId: string, status: TaskStatus, response?: string, error?: string) => {
-    setAgents(prev => prev.map(a => a.id === agentId ? {
-      ...a,
-      taskQueue: a.taskQueue.map(t => t.id === taskId ? { ...t, status, response: response ?? t.response, error: error ?? t.error } : t)
-    } : a));
-  };
-
-  // Tasks are cancelled rather than dropped so the halt is saved and survives a reload
-  const clearAllTasks = () => {
-    setAgents(prev => prev.map(a => ({
-      ...a,
-      state: a.state === 'WORKING' ? 'IDLE' : a.state,
-      taskQueue: a.taskQueue.map(t => UNFINISHED.has(t.status) ? { ...t, status: 'CANCELLED' as TaskStatus } : t)
-    })));
-  };
-
-  const setAgentState = (agentId: string, state: AgentState) => {
-    setAgents(prev => prev.map(a => {
-      if (a.id !== agentId) return a;
-
-      let finalState = state;
-      let breaksTaken = state === 'WORKING' ? 0 : a.breaksTaken;
-
-      // Once the queue is empty, take a break before settling back at the desk
-      if (a.state === 'WORKING' && state === 'IDLE' && !a.taskQueue.some(t => t.status === 'PENDING')) {
-        finalState = Math.random() < 0.5 ? 'BREAK' : 'COFFEE';
-        breaksTaken = 1;
-      }
-
-      return { ...moveTo(a, finalState, prev), breaksTaken };
-    }));
-  };
-
-  // Simulation loop: breaks, returning to the desk, and walking to a new target.
-  // Idle time lives in a ref so an idle office does not re-render (or re-save) every tick.
+  // Map: react at once to what the server reports…
   useEffect(() => {
-    if (!isLeader) return;
-    const idleSince = idleSinceRef.current;
+    if (!loaded) return;
+    const seated = !seatedRef.current;
+    seatedRef.current = true;
+    setVisuals(prev => stepVisuals(prev, serverAgents, Date.now(), seated, false));
+  }, [serverAgents, loaded]);
 
+  // …and let time pass: walking, breaks, coming back to the desk
+  useEffect(() => {
     const tick = setInterval(() => {
-      const now = Date.now();
-      const current = agentsRef.current;
-      const moves = new Map<string, { from: AgentState; to: AgentState }>();
-
-      for (const agent of current) {
-        if (agent.state !== 'IDLE') idleSince.delete(agent.id);
-
-        if (agent.state === 'IDLE') {
-          const since = idleSince.get(agent.id) ?? now;
-          idleSince.set(agent.id, since);
-          if (now - since > IDLE_BEFORE_BREAK_MS && agent.breaksTaken < MAX_BREAKS_PER_IDLE_STRETCH) {
-            const r = Math.random();
-            moves.set(agent.id, { from: 'IDLE', to: r < 0.2 ? 'TOILET' : r < 0.6 ? 'COFFEE' : 'BREAK' });
-            idleSince.delete(agent.id);
-          }
-        } else if (ON_BREAK.has(agent.state) && Math.random() < BREAK_RETURN_CHANCE) {
-          moves.set(agent.id, { from: agent.state, to: 'IDLE' });
-        }
-      }
-
-      if (moves.size === 0 && !current.some(isWalking)) return;
-
-      setAgents(prev => prev.map(a => {
-        const move = moves.get(a.id);
-        // Skip the move if the agent changed state since it was decided (e.g. picked up a task)
-        if (move && a.state === move.from) {
-          const moved = moveTo(a, move.to, prev);
-          return move.to === 'IDLE' ? moved : { ...moved, breaksTaken: a.breaksTaken + 1 };
-        }
-        return isWalking(a) ? { ...a, x: a.targetX, y: a.targetY } : a;
-      }));
+      if (!seatedRef.current) return;
+      setVisuals(prev => stepVisuals(prev, serverAgentsRef.current, Date.now(), false, true));
     }, TICK_MS);
     return () => clearInterval(tick);
-  }, [isLeader]);
+  }, []);
+
+  const agents = useMemo(() => serverAgents.map(agent => {
+    const visual = visuals[agent.id];
+    // Not placed yet (first render after it appeared): keep it where it is about to show up
+    const spot = visual || { state: 'IDLE' as AgentState, ...ENTRANCE, targetX: ENTRANCE.x, targetY: ENTRANCE.y };
+    return { ...agent, state: spot.state, x: spot.x, y: spot.y, targetX: spot.targetX, targetY: spot.targetY };
+  }), [serverAgents, visuals]);
 
   return (
-    <SimulationContext.Provider value={{ agents, isLeader, focus, focusAgent, addAgent, removeAgent, updateAgentTokens, setAgentState, enqueueTask, patchTask, updateTaskStatus, clearAllTasks }}>
+    <SimulationContext.Provider value={{ agents, paused, notifications, notify, focus, focusAgent, addAgent, removeAgent, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused }}>
       {children}
-      {tabRole === 'follower' && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 1000,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: '8px',
-          padding: '24px',
-          textAlign: 'center',
-          background: 'rgba(15, 23, 42, 0.9)',
-          color: 'white',
-        }}>
-          <strong style={{ fontSize: '18px' }}>This office is already open in another tab</strong>
-          <span style={{ fontSize: '14px', opacity: 0.8 }}>Close the other tab and this one will take over automatically.</span>
-        </div>
-      )}
     </SimulationContext.Provider>
   );
 };

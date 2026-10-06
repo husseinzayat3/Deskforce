@@ -1,16 +1,15 @@
-import { TaskRef, cleanPrompt, formatCost, formatUsage, projectOf, sumUsage } from './officeConfig';
+import { TaskRef, budgetOf, cleanPrompt, formatBudget, formatCost, formatUsage, projectOf, sumUsage, taskTitle } from './officeConfig';
 import { stripTags } from './agentPrompt';
 
-export const REPORT_FILENAME = 'REPORT.md';
-export const TRANSCRIPT_FILENAME = 'docs/task-transcript.md';
+/** The first request on a project writes REPORT.md; follow-ups write REPORT-2.md, REPORT-3.md… so nothing is overwritten. */
+export const reportFilename = (sequence: number) => (sequence > 1 ? `REPORT-${sequence}.md` : 'REPORT.md');
+export const transcriptFilename = (sequence: number) => (sequence > 1 ? `docs/task-transcript-${sequence}.md` : 'docs/task-transcript.md');
 
 const STATUS_TEXT: Record<string, string> = {
   COMPLETED: 'Done',
   FAILED: 'Failed',
   CANCELLED: 'Cancelled',
 };
-
-const firstLine = (text: string) => text.split('\n')[0].trim();
 
 /** The tree as a flat list in reading order (each task followed by its sub-tasks), with its depth. */
 const inOrder = (root: TaskRef, tree: TaskRef[]) => {
@@ -26,13 +25,14 @@ const inOrder = (root: TaskRef, tree: TaskRef[]) => {
   return ordered;
 };
 
-const titleOf = (ref: TaskRef) => (ref.task.kind === 'REVIEW' ? 'Final review' : firstLine(cleanPrompt(ref.task.prompt)));
+const titleOf = (ref: TaskRef) => (ref.task.kind === 'REVIEW' ? 'Final review' : taskTitle(ref.task));
 
 /** Markdown report for a finished task tree: the outcome, who did what, what it cost, and the files delivered. */
 export const buildReport = (root: TaskRef, tree: TaskRef[]) => {
   const ordered = inOrder(root, tree);
   const total = sumUsage(tree.map(ref => ref.task));
-  const review = tree.find(ref => ref.task.kind === 'REVIEW' && ref.task.status === 'COMPLETED');
+  // The latest one, in case the work was reviewed again after a revision
+  const review = tree.filter(ref => ref.task.kind === 'REVIEW' && ref.task.status === 'COMPLETED').sort((a, b) => b.task.timestamp - a.task.timestamp)[0];
   const outcomeSource = review || root;
   const outcome = outcomeSource.task.summary || stripTags(outcomeSource.task.response || '') || 'No summary was provided.';
   const files = Array.from(new Set(tree.flatMap(ref => ref.task.files || []))).sort();
@@ -54,6 +54,7 @@ export const buildReport = (root: TaskRef, tree: TaskRef[]) => {
     `- **Tasks:** ${tree.length} (${tree.filter(ref => ref.task.status === 'COMPLETED').length} done, ${tree.filter(ref => ref.task.status === 'FAILED').length} failed, ${tree.filter(ref => ref.task.status === 'CANCELLED').length} cancelled)`,
     `- **Tokens used:** ${total.tokens.toLocaleString('en-US')}`,
     `- **Estimated cost:** ${formatCost(total.cost)}${total.cost === undefined ? ' (at least one model has no known price)' : ''}`,
+    `- **Budget:** ${formatBudget(budgetOf(root.task))}`,
     '',
     `## Outcome${review ? ' (final review)' : ''}`,
     '',
