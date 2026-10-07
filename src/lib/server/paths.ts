@@ -5,9 +5,10 @@ import path from 'path';
  * The desktop app points OFFICE_DATA_DIR at its own data folder, because an installed app
  * cannot write next to its code. Otherwise it is the `workspace` folder of the checkout.
  */
+// The comments tell the bundler these are data folders chosen at run time, not code to package
 export const DATA_DIR = process.env.OFFICE_DATA_DIR
-  ? path.resolve(process.env.OFFICE_DATA_DIR)
-  : path.join(process.cwd(), 'workspace');
+  ? path.resolve(/* turbopackIgnore: true */ process.env.OFFICE_DATA_DIR)
+  : path.join(/* turbopackIgnore: true */ process.cwd(), 'workspace');
 
 export const DB_PATH = path.join(DATA_DIR, 'office_state.db');
 export const PROJECTS_DIR = path.join(DATA_DIR, 'projects');

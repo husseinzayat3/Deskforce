@@ -181,10 +181,23 @@ export const MODEL_SUGGESTIONS: Record<string, string[]> = {
   Ollama: ['llama3'],
 };
 
+/**
+ * Price of a model. Providers often report a dated or suffixed name for the model that answered
+ * (for example "gpt-4o-mini-2024-07-18"), so a name that is not listed falls back to the longest
+ * listed name it starts with.
+ */
+export const priceOf = (model: string) => {
+  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
+  const base = Object.keys(MODEL_PRICING)
+    .filter(name => model.startsWith(`${name}-`) || model.startsWith(`${name}@`))
+    .sort((a, b) => b.length - a.length)[0];
+  return base ? MODEL_PRICING[base] : undefined;
+};
+
 /** Estimated cost in USD, or undefined when the model has no known price. Local and mock models are free. */
 export const estimateCost = (provider: string, model: string, inputTokens: number, outputTokens: number): number | undefined => {
   if (provider === 'Ollama' || model === 'mock') return 0;
-  const price = MODEL_PRICING[model];
+  const price = priceOf(model);
   if (!price) return undefined;
   return (inputTokens * price.input + outputTokens * price.output) / 1_000_000;
 };

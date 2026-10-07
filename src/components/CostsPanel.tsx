@@ -52,9 +52,11 @@ const BarList = ({ title, rows, empty }: { title: string; rows: Row[]; empty: st
 /** This month's estimated spending: against the cap, per day, per employee and per model. */
 export default function CostsPanel({ agents, month, onSetCap }: { agents: Agent[]; month: MonthStatus; onSetCap: (amount: number) => void }) {
   const [capDraft, setCapDraft] = useState('');
+  // The month being shown is the one the panel was opened in
+  const [openedAt] = useState(() => Date.now());
 
   const { byDay, byEmployee, byModel, unpriced, taskCount } = useMemo(() => {
-    const since = startOfMonth(Date.now());
+    const since = startOfMonth(openedAt);
     const days = new Map<string, { value: number; tasks: number; time: number }>();
     const employees = new Map<string, { value: number; tasks: number }>();
     const models = new Map<string, { value: number; tasks: number }>();
@@ -94,7 +96,7 @@ export default function CostsPanel({ agents, month, onSetCap }: { agents: Agent[
       unpriced: unpricedTasks,
       taskCount: tasks,
     };
-  }, [agents]);
+  }, [agents, openedAt]);
 
   const share = month.cap > 0 ? month.spent / month.cap : 0;
   const level = month.reached ? 'critical' : share >= WARNING_SHARE ? 'warning' : 'ok';
@@ -116,7 +118,7 @@ export default function CostsPanel({ agents, month, onSetCap }: { agents: Agent[
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, padding: '4px 2px' }}>
       <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <h4 style={{ margin: 0, fontSize: 12, fontWeight: 600, color: SECONDARY }}>
-          Spent in {new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+          Spent in {new Date(openedAt).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
         </h4>
         <div style={{ fontSize: 48, fontWeight: 600, lineHeight: 1, color: INK, fontVariantNumeric: 'tabular-nums' }}>{money(month.spent)}</div>
         {month.cap > 0 && (

@@ -17,6 +17,9 @@ const THINKING_HEADROOM_TOKENS = 16000;
 const MAX_CONTINUATIONS = 2;
 const CONTINUE_PROMPT = 'Your previous message was cut off by the length limit. Continue exactly where it stopped, starting with the very next character. Do not repeat anything and do not add an introduction.';
 
+/** A call is given up when the provider sends nothing at all for this long. */
+const IDLE_TIMEOUT_MS = 5 * 60_000;
+
 /** Ollama's default context window is small enough to silently cut off the project context. */
 const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX) || 8192;
 
@@ -39,7 +42,16 @@ interface Completion {
 }
 
 type OnText = (delta: string) => void;
-type ModelCall = (messages: ChatMessage[], onText: OnText) => Promise<Completion>;
+
+interface CallIO {
+  onText: OnText;
+  /** Called whenever the provider sends anything, so a silent connection can be told from a busy one. */
+  beat: () => void;
+  /** Aborts the request: the task was halted, or the provider went silent. */
+  signal: AbortSignal;
+}
+
+type ModelCall = (messages: ChatMessage[], io: CallIO) => Promise<Completion>;
 
 export interface ModelRequest {
   provider: APIProvider;
@@ -52,6 +64,8 @@ export interface ModelRequest {
   maxTokens?: number;
   /** Called with each piece of the answer as it is written. */
   onText?: OnText;
+  /** Stops the call, for example when the user halts the office. */
+  signal?: AbortSignal;
 }
 
 export interface ModelResult {
@@ -86,20 +100,21 @@ async function* readLines(res: Response) {
   if (buffer) yield buffer;
 }
 
-const openAiCompatible = (client: OpenAI, model: string, maxTokens: number): ModelCall => async (messages, onText) => {
+const openAiCompatible = (client: OpenAI, model: string, maxTokens: number): ModelCall => async (messages, { onText, beat, signal }) => {
   const stream = await client.chat.completions.create({
     messages,
     model,
     max_tokens: maxTokens,
     stream: true,
     stream_options: { include_usage: true },
-  });
+  }, { signal });
 
   let text = '';
   let finishReason: string | null = null;
   let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
 
   for await (const chunk of stream) {
+    beat();
     const choice = chunk.choices[0];
     if (choice?.delta?.content) {
       text += choice.delta.content;
@@ -117,7 +132,7 @@ const openAiCompatible = (client: OpenAI, model: string, maxTokens: number): Mod
   };
 };
 
-const anthropic = (client: Anthropic, model: string, maxTokens: number): ModelCall => async (messages, onText) => {
+const anthropic = (client: Anthropic, model: string, maxTokens: number): ModelCall => async (messages, { onText, beat, signal }) => {
   const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
   const conversation = messages
     .filter((m): m is ChatMessage & { role: 'user' | 'assistant' } => m.role !== 'system')
@@ -134,8 +149,8 @@ const anthropic = (client: Anthropic, model: string, maxTokens: number): ModelCa
     // Where the model supports it, a request it declines for policy reasons is retried
     // by Anthropic on its default fallback model inside the same call.
     const message = ANTHROPIC_FALLBACK_MODELS.has(model)
-      ? await client.beta.messages.stream({ ...params, betas: [ANTHROPIC_FALLBACK_BETA], fallbacks: 'default' }).on('text', onText).finalMessage()
-      : await client.messages.stream(params).on('text', onText).finalMessage();
+      ? await client.beta.messages.stream({ ...params, betas: [ANTHROPIC_FALLBACK_BETA], fallbacks: 'default' }, { signal }).on('streamEvent', beat).on('text', onText).finalMessage()
+      : await client.messages.stream(params, { signal }).on('streamEvent', beat).on('text', onText).finalMessage();
 
     if (message.stop_reason === 'refusal') {
       const category = message.stop_details?.category;
@@ -156,6 +171,7 @@ const anthropic = (client: Anthropic, model: string, maxTokens: number): ModelCa
       model: message.model,
     };
   } catch (error) {
+    if (signal.aborted) throw error;
     if (error instanceof Anthropic.AuthenticationError) throw new Error('Anthropic rejected the API key. Check it in the settings.');
     if (error instanceof Anthropic.RateLimitError) throw new Error(`Anthropic rate limit reached (429): ${error.message}`);
     if (error instanceof Anthropic.APIConnectionError) throw new Error(`Cannot reach Anthropic: ${error.message}`);
@@ -164,11 +180,12 @@ const anthropic = (client: Anthropic, model: string, maxTokens: number): ModelCa
   }
 };
 
-const gemini = (apiKey: string, model: string, maxTokens: number): ModelCall => async (messages, onText) => {
+const gemini = (apiKey: string, model: string, maxTokens: number): ModelCall => async (messages, { onText, beat, signal }) => {
   const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
   const res = await fetch(`${GEMINI_BASE_URL}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+    signal,
     body: JSON.stringify({
       ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
       contents: messages
@@ -187,6 +204,7 @@ const gemini = (apiKey: string, model: string, maxTokens: number): ModelCall => 
   let usage: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } = {};
 
   for await (const line of readLines(res)) {
+    beat();
     if (!line.startsWith('data:')) continue;
     let chunk: any;
     try {
@@ -217,12 +235,13 @@ const gemini = (apiKey: string, model: string, maxTokens: number): ModelCall => 
   };
 };
 
-const ollama = (url: string, model: string, maxTokens: number): ModelCall => async (messages, onText) => {
+const ollama = (url: string, model: string, maxTokens: number): ModelCall => async (messages, { onText, beat, signal }) => {
   let res: Response;
   try {
     res = await fetch(`${url}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal,
       body: JSON.stringify({
         model,
         messages,
@@ -231,6 +250,7 @@ const ollama = (url: string, model: string, maxTokens: number): ModelCall => asy
       })
     });
   } catch (e: any) {
+    if (signal.aborted) throw e;
     throw new Error(`Cannot reach Ollama at ${url}. Is it running? (${e.message})`);
   }
 
@@ -242,6 +262,7 @@ const ollama = (url: string, model: string, maxTokens: number): ModelCall => asy
   let last: any = {};
   // One JSON object per line; the last one carries the totals
   for await (const line of readLines(res)) {
+    beat();
     if (!line.trim()) continue;
     let chunk: any;
     try {
@@ -266,12 +287,12 @@ const ollama = (url: string, model: string, maxTokens: number): ModelCall => asy
 };
 
 /** Calls the model, and if the answer is cut off mid-way asks it to carry on, so files are not left half-written. */
-const completeFully = async (call: ModelCall, messages: ChatMessage[], onText: OnText): Promise<Completion> => {
+const completeFully = async (call: ModelCall, messages: ChatMessage[], io: CallIO): Promise<Completion> => {
   const conversation = [...messages];
   const total: Completion = { text: '', inputTokens: 0, outputTokens: 0, truncated: false };
 
   for (let round = 0; round <= MAX_CONTINUATIONS; round++) {
-    const part = await call(conversation, onText);
+    const part = await call(conversation, io);
     total.text += part.text;
     total.inputTokens += part.inputTokens;
     total.outputTokens += part.outputTokens;
@@ -296,7 +317,7 @@ export const defaultModel = (provider: APIProvider) => {
 };
 
 /** Runs one prompt on the employee's provider and model. Throws when the provider fails or cannot be reached. */
-export const runModel = async ({ provider, model: requestedModel, prompt, systemPrompt, history, maxTokens, onText = () => undefined }: ModelRequest): Promise<ModelResult> => {
+export const runModel = async ({ provider, model: requestedModel, prompt, systemPrompt, history, maxTokens, onText = () => undefined, signal }: ModelRequest): Promise<ModelResult> => {
   const limit = Math.min(Math.max(Math.floor(Number(maxTokens)) || DEFAULT_MAX_TOKENS, 1), MAX_TOKENS_LIMIT);
 
   const messages: ChatMessage[] = [];
@@ -334,7 +355,34 @@ export const runModel = async ({ provider, model: requestedModel, prompt, system
     return { response, tokens: 15, inputTokens: 10, outputTokens: 5, model: 'mock', cost: 0, truncated: false };
   }
 
-  const result = await completeFully(call, messages, onText);
+  // One controller for both ways a call ends early: the caller stops it, or the provider goes silent
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  if (signal?.aborted) stop();
+  signal?.addEventListener('abort', stop, { once: true });
+
+  let timedOut = false;
+  let idle: ReturnType<typeof setTimeout> | undefined;
+  const beat = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => {
+      timedOut = true;
+      stop();
+    }, IDLE_TIMEOUT_MS);
+  };
+  beat();
+
+  let result: Completion;
+  try {
+    result = await completeFully(call, messages, { onText, beat, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) throw new Error(`${provider} (${model}) sent nothing for ${IDLE_TIMEOUT_MS / 60_000} minutes, so the call was stopped.`);
+    throw error;
+  } finally {
+    clearTimeout(idle);
+    signal?.removeEventListener('abort', stop);
+  }
+
   const answeredBy = result.model || model;
   return {
     response: result.text,

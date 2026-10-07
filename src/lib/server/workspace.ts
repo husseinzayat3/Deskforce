@@ -3,6 +3,9 @@ import path from 'path';
 import { createZip, ZipEntry } from '../zip';
 import { PROJECTS_DIR } from './paths';
 
+// The `turbopackIgnore` comments below mark paths inside the data folder, which is chosen at
+// run time: without them the bundler would try to package the whole checkout with the server.
+
 /** Caches and build output: never part of what the agents wrote. */
 const IGNORED_DIRS = new Set(['.dart_tool', 'build', 'node_modules', '.git', '.idea', '.gradle']);
 
@@ -25,7 +28,7 @@ export const safeProject = (project: unknown): string | null => {
 const projectDirOf = (project: string) => {
   const safe = safeProject(project);
   if (!safe) throw new Error(`Invalid project: ${project}`);
-  return path.join(PROJECTS_DIR, safe);
+  return path.join(/* turbopackIgnore: true */ PROJECTS_DIR, safe);
 };
 
 /**
@@ -47,8 +50,8 @@ const stripFences = (content: string) => {
 };
 
 const listDir = (dir: string, base = dir, out: string[] = []): string[] => {
-  if (!fs.existsSync(dir)) return out;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  if (!fs.existsSync(/* turbopackIgnore: true */ dir)) return out;
+  for (const entry of fs.readdirSync(/* turbopackIgnore: true */ dir, { withFileTypes: true })) {
     if (entry.name.startsWith('.') && entry.name !== '.gitignore') continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
@@ -63,7 +66,7 @@ const listDir = (dir: string, base = dir, out: string[] = []): string[] => {
 /** Absolute path of a project's folder. Throws on an invalid name. */
 export const projectPath = (project: string) => projectDirOf(project);
 
-export const projectExists = (project: string) => fs.existsSync(projectDirOf(project));
+export const projectExists = (project: string) => fs.existsSync(/* turbopackIgnore: true */ projectDirOf(project));
 
 /** The project's own files (caches left out), relative to the project. */
 export const listProjectFiles = (project: string) => listDir(projectDirOf(project));
@@ -74,9 +77,9 @@ export const readProjectContents = (project: string, files = listProjectFiles(pr
   const contents: Record<string, string> = {};
   for (const file of files) {
     if (NO_CONTENT_FILES.has(file) || OFFICE_FILE.test(file) || file.endsWith('.iml')) continue;
-    const full = path.join(projectDir, file);
-    if (fs.statSync(full).size > MAX_CONTENT_BYTES) continue;
-    const data = fs.readFileSync(full);
+    const full = path.join(/* turbopackIgnore: true */ projectDir, file);
+    if (fs.statSync(/* turbopackIgnore: true */ full).size > MAX_CONTENT_BYTES) continue;
+    const data = fs.readFileSync(/* turbopackIgnore: true */ full);
     if (data.includes(0)) continue; // binary
     contents[file] = data.toString('utf-8');
   }
@@ -86,13 +89,13 @@ export const readProjectContents = (project: string, files = listProjectFiles(pr
 /** Writes a file inside the project and returns its project-relative path. Throws on a path that escapes it. */
 export const writeProjectFile = (project: string, filename: string, content: string) => {
   const projectDir = projectDirOf(project);
-  fs.mkdirSync(projectDir, { recursive: true });
+  fs.mkdirSync(/* turbopackIgnore: true */ projectDir, { recursive: true });
 
   const filePath = resolveInside(projectDir, filename);
   if (!filePath) throw new Error(`Unsafe path: ${filename}`);
 
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, stripFences(content), 'utf-8');
+  fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(/* turbopackIgnore: true */ filePath, stripFences(content), 'utf-8');
   return path.relative(projectDir, filePath);
 };
 
@@ -110,9 +113,9 @@ const MIME_TYPES: Record<string, string> = {
 /** A file of the project as raw bytes with its media type, or null when it does not exist or lies outside the project. */
 export const readProjectFile = (project: string, relPath: string) => {
   const filePath = resolveInside(projectDirOf(project), relPath);
-  if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return null;
+  if (!filePath || !fs.existsSync(/* turbopackIgnore: true */ filePath) || !fs.statSync(/* turbopackIgnore: true */ filePath).isFile()) return null;
   return {
-    data: fs.readFileSync(filePath),
+    data: fs.readFileSync(/* turbopackIgnore: true */ filePath),
     contentType: MIME_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
   };
 };
@@ -131,16 +134,16 @@ const PREVIEW_ENTRIES = ['index.html', 'web/index.html', 'public/index.html', 'b
 /** Where a browser preview of the project starts, or undefined when it has no web page. */
 export const previewEntry = (project: string) => {
   const dir = projectDirOf(project);
-  return PREVIEW_ENTRIES.find(entry => fs.existsSync(path.join(dir, entry)));
+  return PREVIEW_ENTRIES.find(entry => fs.existsSync(/* turbopackIgnore: true */ path.join(/* turbopackIgnore: true */ dir, entry)));
 };
 
 const collectForDownload = (dir: string, prefix: string, out: ZipEntry[] = []): ZipEntry[] => {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  for (const entry of fs.readdirSync(/* turbopackIgnore: true */ dir, { withFileTypes: true })) {
     if (DOWNLOAD_IGNORED.has(entry.name)) continue;
     const full = path.join(dir, entry.name);
     const name = `${prefix}/${entry.name}`;
     if (entry.isDirectory()) collectForDownload(full, name, out);
-    else if (entry.isFile()) out.push({ name, data: fs.readFileSync(full), mode: fs.statSync(full).mode & 0o777 });
+    else if (entry.isFile()) out.push({ name, data: fs.readFileSync(/* turbopackIgnore: true */ full), mode: fs.statSync(/* turbopackIgnore: true */ full).mode & 0o777 });
   }
   return out;
 };

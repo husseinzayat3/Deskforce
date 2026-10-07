@@ -73,10 +73,15 @@ export default function Dashboard() {
   };
 
   // Clicking an employee on the map opens their tasks in the side panel
-  React.useEffect(() => {
-    if (!focus) return;
+  const [handledFocus, setHandledFocus] = useState(0);
+  if (focus && focus.at !== handledFocus) {
+    setHandledFocus(focus.at);
     setPanelView('roster');
     setExpandedAgentId(focus.agentId);
+  }
+
+  React.useEffect(() => {
+    if (!focus) return;
     const timer = setTimeout(() => {
       document.getElementById(`agent-row-${focus.agentId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 50);
@@ -366,7 +371,7 @@ return (
                         </div>
                         {task.response && (
                           <div className={styles.historyResponse}>
-                            <strong>Response:</strong> {task.response}
+                            <strong>Response:</strong> {task.response}{task.clipped ? ' (open the task on the task board for the rest)' : ''}
                           </div>
                         )}
                         {task.error && (

@@ -99,16 +99,31 @@ export default function ProjectBrowser({ project, commitId, onClose, notify }: {
     setView({ kind: 'commit', commit, files: data.files });
   }), [base, run]);
 
-  const load = useCallback((openCommit?: string) => run(async () => {
-    const data: Overview = await getJson(base);
-    setOverview(data);
-    const target = openCommit && data.history.find(c => c.id === openCommit);
-    if (target) await showCommit(target);
-  }), [base, run, showCommit]);
+  const load = useCallback(() => run(async () => {
+    setOverview(await getJson(base));
+  }), [base, run]);
 
+  // First load. The dialog is remounted for each project, so this runs once per opening.
   useEffect(() => {
-    load(commitId);
-  }, [load, commitId]);
+    let closed = false;
+    (async () => {
+      try {
+        const data: Overview = await getJson(base);
+        if (closed) return;
+        setOverview(data);
+        const target = commitId && data.history.find(c => c.id === commitId);
+        if (target) {
+          const changes = await getJson(`${base}&commit=${target.id}`);
+          if (!closed) setView({ kind: 'commit', commit: target, files: changes.files });
+        }
+      } catch (e: any) {
+        if (!closed) setError(e.message);
+      }
+    })();
+    return () => {
+      closed = true;
+    };
+  }, [base, commitId]);
 
   const showFile = (path: string) => run(async () => {
     const data = await getJson(`${base}&file=${encodeURIComponent(path)}`);

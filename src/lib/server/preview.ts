@@ -24,6 +24,11 @@ const previews: Map<string, Preview> = (globalForPreview.__officePreviews ??= ne
 const serve = (project: string, root: string): Promise<Preview> =>
   new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
+      // Answer only when addressed as this computer (see refuseUnknownHost)
+      if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/i.test(req.headers.host || '')) {
+        res.writeHead(403).end();
+        return;
+      }
       let relative: string;
       try {
         relative = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname).replace(/^\/+/, '');

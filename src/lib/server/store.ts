@@ -155,6 +155,12 @@ export const getTask = (taskId: string): (TaskItem & { agentId: string }) | unde
   return row ? { ...toTask(row), agentId: row.agentId } : undefined;
 };
 
+/** The task whose files are held by this commit. */
+export const getTaskByCommit = (commitId: string): (TaskItem & { agentId: string }) | undefined => {
+  const row = getDb().prepare('SELECT * FROM tasks WHERE commitId = ?').get(commitId) as any;
+  return row ? { ...toTask(row), agentId: row.agentId } : undefined;
+};
+
 export const createTask = (
   agentId: string,
   prompt: string,
@@ -295,6 +301,10 @@ export const saveTemplate = (template: Omit<Template, 'id' | 'lastRunAt'> & { id
   bump();
   return id;
 };
+
+/** True when a scheduled template is due. Cheap enough to ask every second. */
+export const hasDueTemplate = (now: number) =>
+  Boolean(getDb().prepare("SELECT 1 FROM templates WHERE schedule != 'none' AND nextRunAt IS NOT NULL AND nextRunAt <= ? LIMIT 1").get(now));
 
 export const markTemplateRun = (id: string, lastRunAt: number, nextRunAt: number | undefined) => {
   getDb().prepare('UPDATE templates SET lastRunAt = ?, nextRunAt = ? WHERE id = ?').run(lastRunAt, nextRunAt ?? null, id);

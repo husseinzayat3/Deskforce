@@ -21,14 +21,17 @@ SQLITE_DIR=$(node -p 'require("path").dirname(require.resolve("better-sqlite3/pa
 ARCH=$(node -p 'process.arch')
 
 echo "▸ Building the Next.js server"
-rm -rf "$BUILD_DIR"
+rm -rf "$BUILD_DIR" dist-desktop
 BUILD_DESKTOP=1 npx next build
 
 echo "▸ Assembling the server bundle"
 cp -R "$BUILD_DIR/static" "$STANDALONE/$BUILD_DIR/static"
 cp -R public "$STANDALONE/public"
-# Nothing personal may ship: no env files, no local office data
-rm -rf "$STANDALONE"/.env* "$STANDALONE/workspace" "$STANDALONE/functions"
+# Only the server itself ships. Anything else the bundler traced from the checkout
+# (env files, office data, the git folder, sources, earlier builds) is dropped.
+find "$STANDALONE" -mindepth 1 -maxdepth 1 \
+  ! -name server.js ! -name package.json ! -name node_modules ! -name "$BUILD_DIR" ! -name public \
+  -exec rm -rf {} +
 
 echo "▸ Fetching the SQLite module for Electron $ELECTRON_VERSION ($ARCH)"
 # The server runs inside Electron, whose Node differs from the one on this machine,
@@ -51,8 +54,8 @@ if [ -f .env.local ]; then
     fi
   done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=.' .env.local || true)
 fi
-if [ -n "$(find "$STANDALONE" -name '.env*' -o -name '*.db' | head -1)" ]; then
-  echo "✗ An env file or database was found in the bundle. Not packaging." >&2
+if [ -n "$(find "$STANDALONE" -name '.env*' -o -name '*.db' -o -name '.git' | head -1)" ]; then
+  echo "✗ An env file, database or git folder was found in the bundle. Not packaging." >&2
   exit 1
 fi
 

@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ensureEngine, monthStatus } from '../../../lib/server/engine';
+import { abortRunning, ensureEngine, monthStatus } from '../../../lib/server/engine';
 import { liveSnapshot } from '../../../lib/server/live';
-import { refuseForeignRequest } from '../../../lib/server/guard';
+import { refuseForeignRequest, refuseUnknownHost } from '../../../lib/server/guard';
 import { nextRunTime } from '../../../lib/schedule';
 import * as store from '../../../lib/server/store';
-import { APIProvider } from '../../../lib/types';
+import { Agent, APIProvider } from '../../../lib/types';
 import { OFFICE_CONFIG, getRoot, indexTasks } from '../../../lib/officeConfig';
 import { projectExists, safeProject } from '../../../lib/server/workspace';
 import { PROJECTS_DIR } from '../../../lib/server/paths';
@@ -21,6 +21,21 @@ const MAX_NAME_CHARS = 60;
 const MAX_PROMPT_CHARS = 20_000;
 
 const MAX_NOTE_CHARS = 4000;
+
+/** Longest response sent with the office overview; the full text is fetched per task when it is opened. */
+const OVERVIEW_RESPONSE_CHARS = 1500;
+
+/** Employees with their tasks, without the long texts that would make every update heavy. */
+const overview = (agents: Agent[]): Agent[] => agents.map(agent => ({
+  ...agent,
+  taskQueue: agent.taskQueue.map(({ report, ...task }) => ({
+    ...task,
+    hasReport: Boolean(report),
+    ...(task.response && task.response.length > OVERVIEW_RESPONSE_CHARS
+      ? { response: `${task.response.slice(0, OVERVIEW_RESPONSE_CHARS)}…`, clipped: true }
+      : {}),
+  })),
+}));
 
 const badRequest = (error: string) => NextResponse.json({ error }, { status: 400 });
 
@@ -46,15 +61,26 @@ const snapshot = (knownVersion: string | null, afterEvent: number | null) => {
     // A first request only learns where the event stream stands, so old notifications are not replayed
     events: afterEvent === null ? [] : store.listEvents(afterEvent),
     lastEventId: store.latestEventId(),
-    ...(knownVersion === version ? {} : { agents: store.getState(), roles: store.listRoles(), templates: store.listTemplates() }),
+    ...(knownVersion === version ? {} : { agents: overview(store.getState()), roles: store.listRoles(), templates: store.listTemplates() }),
   };
 };
 
-/** GET /api/office?version=<known>&afterEvent=<id> */
+/**
+ * GET /api/office?version=<known>&afterEvent=<id>   the office overview
+ * GET /api/office?task=<id>                         one task in full (whole response and report)
+ */
 export async function GET(req: NextRequest) {
+  const refusal = refuseUnknownHost(req);
+  if (refusal) return refusal;
+
   try {
     ensureEngine();
     const params = new URL(req.url).searchParams;
+    const taskId = params.get('task');
+    if (taskId !== null) {
+      const task = store.getTask(taskId);
+      return task ? NextResponse.json(task) : NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    }
     const afterEvent = params.get('afterEvent');
     return NextResponse.json(snapshot(params.get('version'), afterEvent === null ? null : Number(afterEvent) || 0));
   } catch (error: any) {
@@ -104,6 +130,7 @@ export async function POST(req: NextRequest) {
       case 'remove':
         if (typeof body.agentId !== 'string') return badRequest('Missing agentId');
         store.deleteAgent(body.agentId);
+        abortRunning(body.agentId);
         break;
       case 'assign': {
         const prompt = typeof body.prompt === 'string' ? body.prompt.trim().slice(0, MAX_PROMPT_CHARS) : '';
@@ -234,6 +261,8 @@ export async function POST(req: NextRequest) {
       }
       case 'halt':
         store.cancelUnfinishedTasks();
+        // Stop the model calls too, so halted work stops costing money
+        abortRunning();
         break;
       case 'pause':
         store.setPaused(Boolean(body.paused));

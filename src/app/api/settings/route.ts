@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { describeSettings, isSettingName, saveSetting } from '../../../lib/server/settings';
-import { refuseForeignRequest } from '../../../lib/server/guard';
+import { refuseForeignRequest, refuseUnknownHost } from '../../../lib/server/guard';
 
 export const dynamic = 'force-dynamic';
 
 const MAX_VALUE_CHARS = 500;
 
 /** GET /api/settings → provider settings, with API keys reduced to "set or not" */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const refusal = refuseUnknownHost(req);
+  if (refusal) return refusal;
+
   try {
     return NextResponse.json(describeSettings());
   } catch (error: any) {

@@ -71,6 +71,10 @@ export interface TaskItem {
   kind?: TaskKind;
   /** Markdown report for the whole task tree. Only set on tasks assigned by the user. */
   report?: string;
+  /** The task has a report. The office overview leaves the text out; ask for the task itself to get it. */
+  hasReport?: boolean;
+  /** `response` was shortened in the office overview; ask for the task itself to get all of it. */
+  clipped?: boolean;
   reviewStatus?: ReviewStatus;
   reviewNote?: string;
   /** What the user asked to be changed when sending a finished task back. */

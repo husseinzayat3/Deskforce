@@ -24,7 +24,7 @@ A virtual office where AI agents work as a team. Hire employees, give the CEO a 
 
 ### 1. Prerequisites
 
-- Node.js 20 or newer (`nvm use` picks it up from `.nvmrc`)
+- Node.js 20.9 or newer (`nvm use` picks it up from `.nvmrc`)
 - At least one AI provider:
   - an API key for OpenAI, Anthropic, Google Gemini or xAI (Grok), or
   - [Ollama](https://ollama.com) running locally with the `llama3` model (`ollama pull llama3`) — set `OLLAMA_MODEL` to use a different one
@@ -79,6 +79,13 @@ The guardrail limits and the per-model prices used for cost estimates live in `s
 | AI | OpenAI SDK (OpenAI and Grok), Anthropic SDK, Gemini and Ollama HTTP APIs, all streamed |
 | History | `isomorphic-git` (no `git` program needed) |
 
+## Tests
+
+```bash
+npm test      # unit tests for the response parser, pricing, naming and schedules
+npm run lint
+```
+
 ## Desktop app (macOS)
 
 ```bash
@@ -95,18 +102,22 @@ The app is not signed with an Apple Developer ID. It runs on the Mac that built 
 
 ```bash
 docker build -t my-office .
-docker run -p 3000:3000 -v $(pwd)/workspace:/app/workspace --env-file .env.local my-office
+docker run -p 127.0.0.1:3000:3000 -v $(pwd)/workspace:/app/workspace --env-file .env.local my-office
 ```
 
 Mount `/app/workspace` as shown to keep the generated files and the database. To use Ollama from the container, point `OLLAMA_URL` at the host, for example `-e OLLAMA_URL=http://host.docker.internal:11434`.
 
 ## Security
 
-This app is built to run on your own machine. The API routes have no authentication: anyone who can reach the server can hire employees and assign tasks, which spends your API credits and writes files into `workspace/`. Do not expose it to the internet without adding authentication first.
+The office has no login, so it is built to be used from the computer it runs on:
 
-The browser cannot call a model or write a file directly; it can only queue tasks. Files are written by the engine, and only inside the task's project folder.
+- `npm run dev` and `npm start` listen on `127.0.0.1` only, and the API refuses requests addressed to any other host name. To reach it under another name (for example behind your own reverse proxy with authentication), list the names in `OFFICE_ALLOWED_HOSTS`.
+- Requests that change anything are accepted only from the office page itself, so another website open in your browser cannot assign tasks or change settings.
+- The browser cannot call a model or write a file directly; it can only queue tasks. Files are written by the engine, and only inside the task's project folder.
+- A project preview is served from a separate local address: the page a model wrote cannot reach the office.
+- Halting the office, or removing an employee, stops their model calls straight away.
 
-Requests that change anything are accepted only from the office page itself, so another website open in your browser cannot assign tasks or change settings. A project preview is served from a separate local address for the same reason: the page a model wrote cannot reach the office.
+Do not expose it to the internet without adding authentication first.
 
 ## Custom offices
 

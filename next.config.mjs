@@ -5,10 +5,10 @@ const desktop = process.env.BUILD_DESKTOP === '1';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   ...(desktop ? { output: 'standalone', distDir: '.next-desktop' } : {}),
-  experimental: {
-    // Lets src/instrumentation.ts start the office engine when the server boots
-    instrumentationHook: true,
-  },
+  // Native or Node-only packages the server loads at run time instead of bundling
+  serverExternalPackages: ['better-sqlite3', 'isomorphic-git'],
+  // The office's own data and build output are never part of the server bundle
+  outputFileTracingExcludes: { '*': ['workspace/**', 'dist-desktop/**', 'build-desktop/**', 'tests/**', 'electron/**', 'scripts/**', 'src/**', '.git/**', '.env*'] },
 };
 
 export default nextConfig;

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Trash2, X } from 'lucide-react';
 import { Agent, Role } from '../lib/types';
 import styles from './Dashboard.module.css';
@@ -11,9 +11,6 @@ const NEW_ROLE: Role = { name: '', rank: 2, instructions: '' };
 /** One role: its level in the hierarchy and the instructions its employees work by. */
 const RoleEditor = ({ role, isNew, inUse, onSave, onRemove }: { role: Role; isNew?: boolean; inUse: number; onSave: (role: Role) => void; onRemove?: () => void }) => {
   const [draft, setDraft] = useState(role);
-
-  // Follow what the server has once a save comes back
-  useEffect(() => setDraft(role), [role]);
 
   const changed = draft.name !== role.name || draft.rank !== role.rank || draft.instructions !== role.instructions;
 
@@ -77,7 +74,8 @@ export default function RolesPanel({ roles, agents, onSave, onRemove, onClose }:
         </span>
 
         {roles.map(role => (
-          <RoleEditor key={role.name} role={role} inUse={holders(role.name)} onSave={onSave} onRemove={() => onRemove(role.name)} />
+          // Keyed on the saved values, so an editor starts afresh once a save comes back
+          <RoleEditor key={`${role.name}:${role.rank}:${role.instructions}`} role={role} inUse={holders(role.name)} onSave={onSave} onRemove={() => onRemove(role.name)} />
         ))}
 
         <h4 style={{ margin: '4px 0 0', fontSize: 13 }}>New role</h4>

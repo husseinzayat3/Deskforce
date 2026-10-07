@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { listProjectFiles, previewEntry, projectExists, safeProject, viewProjectFile, zipProject } from '../../../lib/server/workspace';
 import { commitChanges, projectHistory, undoCommit } from '../../../lib/server/git';
 import { startPreview } from '../../../lib/server/preview';
-import { refuseForeignRequest } from '../../../lib/server/guard';
+import { refuseForeignRequest, refuseUnknownHost } from '../../../lib/server/guard';
+import * as store from '../../../lib/server/store';
+import { getRoot, indexTasks } from '../../../lib/officeConfig';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +19,9 @@ const COMMIT_ID = /^[0-9a-f]{40}$/;
  * Files are written by the office engine on the server, never by the browser.
  */
 export async function GET(req: NextRequest) {
+  const refusal = refuseUnknownHost(req);
+  if (refusal) return refusal;
+
   try {
     const params = new URL(req.url).searchParams;
     const project = safeProject(params.get('project'));
@@ -74,7 +79,17 @@ export async function POST(req: NextRequest) {
 
     if (body.action === 'undo') {
       if (typeof body.commit !== 'string' || !COMMIT_ID.test(body.commit)) return NextResponse.json({ error: 'Invalid commit' }, { status: 400 });
-      return NextResponse.json(await undoCommit(project, body.commit));
+      const result = await undoCommit(project, body.commit);
+
+      // The task no longer stands as it was reported: say so on it, and have the project's report rewritten
+      const task = result.restored.length > 0 ? store.getTaskByCommit(body.commit) : undefined;
+      if (task) {
+        const note = `Undone by you on ${new Date().toLocaleString()}: ${result.restored.join(', ')} put back as before.`;
+        store.updateTask(task.id, { reviewNote: task.reviewNote ? `${task.reviewNote}\n${note}` : note });
+        const root = getRoot(task.id, indexTasks(store.getState()))?.task;
+        if (root?.report) store.updateTask(root.id, { report: undefined });
+      }
+      return NextResponse.json(result);
     }
 
     if (body.action === 'preview') {

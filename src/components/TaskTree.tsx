@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2, Download, FileText, RotateCcw, Pencil, FolderPlus, FolderOpen, FolderTree, GitCommitHorizontal, BookmarkPlus, Send, X } from 'lucide-react';
 import { Agent, TaskItem, TaskStatus } from '../lib/types';
 import { OFFICE_CONFIG, FINISHED_STATUSES, budgetOf, cleanPrompt, formatBudget, formatUsage, projectOf, sumUsage, taskTitle } from '../lib/officeConfig';
@@ -61,6 +61,17 @@ const downloadText = (filename: string, text: string) => {
   URL.revokeObjectURL(url);
 };
 
+/** The whole task, with the long texts the office overview leaves out. */
+const fetchTask = async (taskId: string): Promise<TaskItem> => {
+  const res = await fetch(`/api/office?task=${encodeURIComponent(taskId)}`, { cache: 'no-store' });
+  const data = await res.json();
+  if (!res.ok || data.error) throw new Error(data.error || 'The task could not be loaded.');
+  return data;
+};
+
+/** Changes whenever the long texts of a task may have changed. */
+const textVersion = (task: TaskItem) => `${task.status}:${task.completedAt || 0}:${task.hasReport ? 1 : 0}`;
+
 /** Flattens a node's subtree (excluding the node itself). */
 const descendants = (node: TaskNode): TaskNode[] =>
   node.children.flatMap(c => [c, ...descendants(c)]);
@@ -79,6 +90,29 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
   };
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [openDetails, setOpenDetails] = useState<Set<string>>(new Set());
+
+  // Full texts of the tasks whose details are open, fetched when needed
+  const [fullTexts, setFullTexts] = useState<Record<string, { version: string; response?: string; report?: string }>>({});
+
+  useEffect(() => {
+    agents.forEach(agent => agent.taskQueue.forEach(task => {
+      if (!openDetails.has(task.id) || !(task.clipped || task.hasReport)) return;
+      const version = textVersion(task);
+      if (fullTexts[task.id]?.version === version) return;
+      // Marked first, so the same text is not requested again while it loads
+      setFullTexts(prev => ({ ...prev, [task.id]: { ...prev[task.id], version } }));
+      fetchTask(task.id)
+        .then(full => setFullTexts(prev => ({ ...prev, [task.id]: { version, response: full.response, report: full.report } })))
+        .catch(() => undefined);
+    }));
+  }, [agents, openDetails, fullTexts]);
+
+  const downloadReport = (task: TaskItem) => {
+    fetchTask(task.id)
+      .then(full => downloadText(`${projectOf(task)}-report.md`, full.report || ''))
+      .catch(e => notify(e.message));
+  };
+
 
   const roots = useMemo(() => {
     const nodes = new Map<string, TaskNode>();
@@ -193,12 +227,12 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
                 </span>
               )}
 
-              {task.report && (
+              {task.hasReport && (
                 <>
                   <button
                     id={`task-report-${task.id}`}
                     className={`${styles.cancelBtn} ${styles.approveBtn}`}
-                    onClick={() => downloadText(`${projectOf(task)}-report.md`, task.report!)}
+                    onClick={() => downloadReport(task)}
                     title="Download the report for this task"
                   >
                     <FileText size={11} />
@@ -417,7 +451,7 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
           {detailsOpen && (
             <div className={styles.details}>
               <div className={styles.detailPrompt}>{cleanPrompt(task.prompt)}</div>
-              {task.response && <div className={styles.detailResponse}>{task.response}</div>}
+              {task.response && <div className={styles.detailResponse}>{fullTexts[task.id]?.response ?? task.response}</div>}
               {task.error && <div className={styles.detailError}>{task.error}</div>}
               {task.clarifications && (
                 <div className={styles.detailSummary}>
@@ -453,11 +487,11 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
                   <strong>Usage:</strong> {usage}{task.model ? ` · ${task.model}` : ''}
                 </div>
               )}
-              {task.report && (
+              {task.hasReport && fullTexts[task.id]?.report && (
                 <div className={styles.detailResponse}>
                   <strong>Report</strong>
                   {'\n\n'}
-                  {task.report}
+                  {fullTexts[task.id].report}
                 </div>
               )}
               {task.project && <div className={styles.detailTime}>Project folder: {projectsDir}/{task.project}</div>}
