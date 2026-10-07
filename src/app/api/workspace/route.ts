@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { listProjectFiles, previewEntry, projectExists, safeProject, viewProjectFile, zipProject } from '../../../lib/server/workspace';
 import { commitChanges, projectHistory, undoCommit } from '../../../lib/server/git';
 import { startPreview } from '../../../lib/server/preview';
+import { checksAllowed, runChecks } from '../../../lib/server/checks';
 import { refuseForeignRequest, refuseUnknownHost } from '../../../lib/server/guard';
 import * as store from '../../../lib/server/store';
 import { getRoot, indexTasks } from '../../../lib/officeConfig';
@@ -56,6 +57,7 @@ export async function GET(req: NextRequest) {
       files: listProjectFiles(project),
       history: await projectHistory(project),
       canPreview: Boolean(previewEntry(project)),
+      canCheck: checksAllowed(),
     });
   } catch (error: any) {
     console.error('Workspace GET error:', error);
@@ -67,6 +69,7 @@ export async function GET(req: NextRequest) {
  * POST /api/workspace
  *  { action: 'undo', project, commit }   put the files one task changed back as they were
  *  { action: 'preview', project }        serve the project's web page and return its address
+ *  { action: 'check', project }          check the files and run the tests (only when allowed in the settings)
  */
 export async function POST(req: NextRequest) {
   const refusal = refuseForeignRequest(req);
@@ -87,9 +90,14 @@ export async function POST(req: NextRequest) {
         const note = `Undone by you on ${new Date().toLocaleString()}: ${result.restored.join(', ')} put back as before.`;
         store.updateTask(task.id, { reviewNote: task.reviewNote ? `${task.reviewNote}\n${note}` : note });
         const root = getRoot(task.id, indexTasks(store.getState()))?.task;
-        if (root?.report) store.updateTask(root.id, { report: undefined });
+        if (root) store.updateTask(root.id, { report: undefined, checkRuns: 0, checkPassed: undefined, checkOutput: undefined });
       }
       return NextResponse.json(result);
+    }
+
+    if (body.action === 'check') {
+      if (!checksAllowed()) return NextResponse.json({ error: 'Running checks is turned off. Turn it on in the settings first.' }, { status: 400 });
+      return NextResponse.json(await runChecks(project));
     }
 
     if (body.action === 'preview') {

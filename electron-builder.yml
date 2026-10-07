@@ -13,7 +13,8 @@ files:
   - package.json
 
 # Kept as plain files so electron/after-pack.js can finish the bundle:
-# it adds the Next.js server (.next-desktop/standalone) and signs the result.
+# it adds the Next.js server (.next-desktop/standalone) with the SQLite module
+# for the app's processor, and signs the result when no Developer ID is used.
 asar: false
 afterPack: electron/after-pack.js
 
@@ -23,10 +24,13 @@ npmRebuild: false
 mac:
   category: public.app-category.developer-tools
   icon: build-desktop/icon.icns
+  # Needed for notarisation; has no effect on an ad-hoc signed build
+  hardenedRuntime: true
   target:
     - dmg
-  # No Apple Developer ID: see electron/after-pack.js
-  identity: null
 
 dmg:
   title: "${productName} ${version}"
+
+# Signing, notarisation, the update feed and the processors to build for are
+# chosen by scripts/build-desktop.sh from environment variables.

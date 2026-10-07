@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Download, ExternalLink, FileText, History, Play, RotateCcw, X } from 'lucide-react';
+import { Download, ExternalLink, FileText, History, ListChecks, Play, RotateCcw, X } from 'lucide-react';
 import styles from './Dashboard.module.css';
 
 interface Commit {
@@ -28,13 +28,16 @@ interface Overview {
   files: string[];
   history: Commit[];
   canPreview: boolean;
+  /** Whether running checks is turned on in the settings. */
+  canCheck: boolean;
 }
 
 type View =
   | { kind: 'empty' }
   | { kind: 'file'; path: string; text?: string; size: number }
   | { kind: 'commit'; commit: Commit; files: FileChange[] }
-  | { kind: 'preview'; url: string };
+  | { kind: 'preview'; url: string }
+  | { kind: 'checks'; passed: boolean; output: string };
 
 const DIFF_STYLE: Record<DiffLine['type'], React.CSSProperties> = {
   context: { color: '#334155' },
@@ -135,6 +138,11 @@ export default function ProjectBrowser({ project, commitId, onClose, notify }: {
     setView({ kind: 'preview', url: data.url });
   });
 
+  const showChecks = () => run(async () => {
+    const result = await postJson({ action: 'check', project });
+    setView({ kind: 'checks', passed: result.passed, output: result.output });
+  });
+
   const undo = (commit: Commit) => {
     if (!window.confirm(`Undo "${commit.message.split('\n')[0]}"?\n\nEvery file this task changed goes back to how it was before. Files changed again since then are left alone.`)) return;
     run(async () => {
@@ -160,6 +168,11 @@ export default function ProjectBrowser({ project, commitId, onClose, notify }: {
       <div onClick={e => e.stopPropagation()} className={styles.card} style={{ width: 'min(1100px, 100%)', height: 'min(760px, 100%)', padding: 0, overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: '1px solid #e2e8f0' }}>
           <strong style={{ fontSize: 14, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project}</strong>
+          {overview?.canCheck && (
+            <button className={styles.button} style={{ padding: '6px 10px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, background: '#475569' }} onClick={showChecks} disabled={busy} title="Check the syntax of the files and run the project's tests">
+              <ListChecks size={13} /> {busy ? 'Working…' : 'Run checks'}
+            </button>
+          )}
           {overview?.canPreview && (
             <button className={styles.button} style={{ padding: '6px 10px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }} onClick={showPreview} disabled={busy}>
               <Play size={13} /> Run preview
@@ -248,6 +261,15 @@ export default function ProjectBrowser({ project, commitId, onClose, notify }: {
                       )}
                   </div>
                 ))}
+              </div>
+            )}
+
+            {view.kind === 'checks' && (
+              <div>
+                <div style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, borderBottom: '1px solid #e2e8f0', color: view.passed ? '#065f46' : '#991b1b' }}>
+                  {view.passed ? '✓ Checks passed' : '✗ Checks failed'}
+                </div>
+                <pre style={{ margin: 0, padding: 16, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: '#0f172a', ...mono }}>{view.output}</pre>
               </div>
             )}
 

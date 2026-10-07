@@ -3,8 +3,13 @@ import { OFFICE_CONFIG, FINISHED_STATUSES, TaskRef, rankOf, startOfMonth, taskTi
 import { buildSystemPrompt, FILE_PATH_PLACEHOLDER, PROJECT_NAME_PLACEHOLDER, REVIEW_TASK_PROMPT } from '../agentPrompt';
 import { buildReport, buildTranscript, reportFilename, transcriptFilename } from '../report';
 import * as store from './store';
-import { runModel } from './llm';
-import { listProjectFiles, projectExists, projectPath, readProjectContents, writeProjectFile } from './workspace';
+import { ToolsUnsupportedError, addCost, hasRealModel, runModel, searchProviderFor, searchWeb } from './llm';
+import { AgentTool, runAgent } from './agent';
+import { applyEdit } from '../edits';
+import { fetchPage } from './web';
+import { checksAllowed, runChecks } from './checks';
+import { getSetting } from './settings';
+import { attachedImages, deleteProjectFile, installAttachments, listProjectFiles, projectExists, projectPath, readProjectContents, viewProjectFile, writeProjectFile } from './workspace';
 import { authorFor, commitProject } from './git';
 import { appendLive, endLive, startLive } from './live';
 import { nextRunTime } from '../schedule';
@@ -26,6 +31,9 @@ const DUPLICATE_SIMILARITY = 0.8;
 
 const PLACEHOLDER_FILENAMES = new Set([FILE_PATH_PLACEHOLDER, 'filename.ext']);
 
+/** Title of the task that repairs a project whose checks failed. */
+const FIX_CHECKS_TITLE = 'Fix failing checks';
+
 /** How many times one task may stop to ask the user something. */
 const MAX_QUESTIONS_PER_TASK = 2;
 
@@ -44,12 +52,15 @@ interface EngineState {
   aborts: Map<string, AbortController>;
   /** Set after a tick that found nothing to do; while it still matches, ticks stay cheap. */
   idleKey?: string;
+  /** Root tasks whose project checks are running right now. */
+  verifying: Set<string>;
 }
 
 const globalForEngine = globalThis as unknown as { __officeEngine?: EngineState };
-const engine: EngineState = (globalForEngine.__officeEngine ??= { running: new Map(), cooldown: new Map(), aborts: new Map() });
+const engine: EngineState = (globalForEngine.__officeEngine ??= { running: new Map(), cooldown: new Map(), aborts: new Map(), verifying: new Set() });
 // An engine kept across a development reload may predate this field
 engine.aborts ??= new Map();
+engine.verifying ??= new Set();
 
 /** Marks a task as running and returns the signal that stops its model calls. */
 const begin = (taskId: string, agentId: string) => {
@@ -127,15 +138,12 @@ const projectHistoryOf = (rootTask: TaskItem, agents: Agent[], taskIndex: Map<st
     });
 };
 
-/** Adds two cost estimates; unknown stays unknown. */
-const addCost = (a: number | undefined, b: number | undefined) => (a === undefined || b === undefined ? undefined : a + b);
-
 /** Files an assignment says it will touch, lower-cased. */
 const filesMentioned = (description: string) =>
   new Set((description.match(FILE_MENTION) || []).map(f => f.toLowerCase().replace(/^\.?\//, '')).filter(f => !/^\d+\.\d+$/.test(f)));
 
 /** First line of a commit message for a task. */
-const commitTitle = (task: TaskItem) => (task.kind === 'REVIEW' ? 'Final review' : taskTitle(task)).slice(0, 72);
+const commitTitle = (task: TaskItem) => (task.kind === 'REVIEW' && !task.title ? 'Final review' : taskTitle(task)).slice(0, 72);
 
 /**
  * A meeting: the participants were asked to change the same files, so before any of them starts
@@ -217,13 +225,23 @@ const holdMeeting = async (host: Agent, task: TaskItem, agents: Agent[], overBud
   }
 };
 
+/** Provider and model pairs found unable to call tools; they use the tag format from then on. */
+const withoutTools = new Set<string>();
+
+const MAX_SEARCHES_PER_TASK = 6;
+const MAX_FETCHES_PER_TASK = 8;
+const MAX_CHECK_RUNS_PER_TASK = 3;
+/** Longest file handed to a model in one read. */
+const MAX_READ_CHARS = 60_000;
+
+const text = (value: unknown) => (typeof value === 'string' ? value : '');
+
 const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles: Role[]) => {
   const taskIndex = indexTasks(agents);
   const rootTask = getRoot(task.id, taskIndex)?.task || task;
   const isReview = task.kind === 'REVIEW';
-  // A root task that has not run yet starts a new project, which the agent names in its response
-  const namesProject = rootTask.id === task.id && !task.project;
-  let slug = namesProject ? '' : projectOf(rootTask);
+  const isRoot = rootTask.id === task.id;
+  let slug = isRoot && !task.project ? '' : projectOf(rootTask);
   const ancestors = getAncestors(task.id, taskIndex);
   const depth = ancestors.length;
   const tree = getTree(rootTask.id, taskIndex);
@@ -254,6 +272,53 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
   };
 
   try {
+    // What the task produces, whichever way the model works
+    let response = '';
+    let summary: string | undefined;
+    let tokens = 0;
+    let cost: number | undefined = 0;
+    let model = '';
+    let question: string | undefined;
+    let changed = false;
+    const writtenFiles: string[] = [];
+    const lostFiles: string[] = [];
+    const problems: string[] = [];
+    const requested: { targetId: string; title?: string; description: string }[] = [];
+
+    let prepared = false;
+    /** Makes sure the project has a folder that is ready to be written to, and returns its name. */
+    const projectReady = async (proposedName = '') => {
+      if (!slug) {
+        const name = slugifyProjectName(proposedName);
+        const base = name && name !== PROJECT_NAME_PLACEHOLDER ? name : projectNameFromPrompt(task.prompt);
+        slug = claimProjectName(base, task.id, store.getState());
+        // Saved on the root task so its sub-tasks (and later restarts) find the same folder
+        store.updateTask(task.id, { project: slug });
+      }
+      if (!prepared) {
+        prepared = true;
+        const attached = installAttachments(task.id, slug);
+        // Whatever is not in the history yet goes in first, so this task's commit shows only its own changes
+        await commitProject(slug, attached.length ? 'Files attached by the client' : 'Changes made outside a task').catch(() => undefined);
+      }
+      return slug;
+    };
+
+    const saveFile = async (requestedPath: string, content: string) => {
+      const project = await projectReady();
+      const filename = normalizeFilename(requestedPath, project);
+      // Models sometimes echo the format example back verbatim
+      if (!filename || PLACEHOLDER_FILENAMES.has(filename.toLowerCase())) throw new Error('That is a placeholder, not a real file path.');
+      const written = writeProjectFile(project, filename, content);
+      if (!writtenFiles.includes(written)) writtenFiles.push(written);
+      changed = true;
+      return written;
+    };
+
+    // An existing project is prepared now; attached files must be in place before the model starts
+    if (slug || task.attachments?.length) await projectReady();
+    const namesProject = !slug;
+
     // The real state of the project: what exists, and what is in it
     let existingFiles: string[] = [];
     let fileContents: Record<string, string> = {};
@@ -274,128 +339,317 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       .filter(ref => ref.task.kind === 'MEETING' && ref.task.status === 'COMPLETED' && ref.task.parentId === task.parentId && ref.task.participants?.includes(agent.id))
       .sort((a, b) => b.task.timestamp - a.task.timestamp)[0]?.task.summary;
 
-    const systemPrompt = buildSystemPrompt({
+    const modelKey = `${agent.api}:${agent.model || ''}`;
+    const webOn = getSetting('webAccess') === 'on';
+    const canSearch = webOn && (agent.api === 'Anthropic' || searchProviderFor(agent.api) !== null);
+    const canRunChecks = checksAllowed();
+    const images = isRoot && slug ? attachedImages(slug, rootTask.attachments) : [];
+
+    const systemPromptFor = (mode: 'tools' | 'tags') => buildSystemPrompt({
       agent, task, rootTask, parent: ancestors[0], tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents,
       projectHistory: projectHistoryOf(rootTask, agents, taskIndex),
       roleInstructions: roles.find(r => r.name === agent.role)?.instructions || '',
       canAsk,
       meetingPlan,
+      mode,
+      webAccess: mode === 'tools' && canSearch,
+      canRunChecks: mode === 'tools' && canRunChecks,
+      attachments: rootTask.attachments || [],
     });
 
     const prompt = stripGuardrailNote(task.prompt);
-    const result = await runModel({
-      provider: agent.api,
-      model: agent.model,
-      prompt,
-      systemPrompt,
-      maxTokens: isReview ? OFFICE_CONFIG.REVIEW_MAX_TOKENS : undefined,
-      onText: delta => appendLive(task.id, delta),
-      signal,
-    });
+    const onText = (delta: string) => appendLive(task.id, delta);
 
-    if (result.tokens) store.addAgentTokens(agent.id, result.tokens);
+    /** The model works by calling functions: files are read and written as it goes. */
+    const workWithTools = async () => {
+      const used = { searches: 0, fetches: 0, checks: 0 };
+      const tools: AgentTool[] = [];
+      const pathParam = { type: 'string', description: 'Path of the file inside the project, for example lib/main.dart' };
 
-    if (!result.response) {
-      throw new Error('The model returned an empty response.');
+      if (namesProject) {
+        tools.push({
+          name: 'name_project',
+          description: 'Names the new project. Call this once, before writing any file.',
+          parameters: { type: 'object', properties: { name: { type: 'string', description: '2 to 4 lowercase words joined by hyphens, for example voice-calculator' } }, required: ['name'] },
+          describe: input => `project named: ${text(input.name)}`,
+          run: async input => ({ output: `The project folder is "${await projectReady(text(input.name))}".` }),
+        });
+      }
+
+      tools.push(
+        {
+          name: 'list_files',
+          description: 'Lists the files in the project.',
+          parameters: { type: 'object', properties: {} },
+          describe: () => 'listed the files',
+          run: () => {
+            const files = slug ? listProjectFiles(slug) : [];
+            return { output: files.length ? files.join('\n') : 'The project has no files yet.' };
+          },
+        },
+        {
+          name: 'read_file',
+          description: 'Returns the current contents of a file in the project.',
+          parameters: { type: 'object', properties: { path: pathParam }, required: ['path'] },
+          describe: input => `read file: ${text(input.path)}`,
+          run: input => {
+            const file = slug ? viewProjectFile(slug, normalizeFilename(text(input.path), slug)) : null;
+            if (!file) throw new Error(`There is no file "${text(input.path)}". Use list_files to see what exists.`);
+            if (file.text === undefined) throw new Error('That file is binary or too large to read as text.');
+            return { output: file.text.length > MAX_READ_CHARS ? `${file.text.slice(0, MAX_READ_CHARS)}\n[cut: the file is longer]` : file.text || '(empty file)' };
+          },
+        },
+        {
+          name: 'write_file',
+          description: 'Creates a file, or replaces it completely, with the given contents. Missing folders are created.',
+          parameters: { type: 'object', properties: { path: pathParam, content: { type: 'string', description: 'The complete contents of the file' } }, required: ['path', 'content'] },
+          describe: input => `saved file: ${text(input.path)}`,
+          run: async input => {
+            if (typeof input.content !== 'string') throw new Error('content is missing.');
+            return { output: `Saved ${await saveFile(text(input.path), input.content)}.` };
+          },
+        },
+        {
+          name: 'edit_file',
+          description: 'Replaces one passage of an existing file and keeps the rest. old_text must match the file exactly, including indentation, and must identify one place only.',
+          parameters: {
+            type: 'object',
+            properties: {
+              path: pathParam,
+              old_text: { type: 'string', description: 'The exact text to replace' },
+              new_text: { type: 'string', description: 'The text to put in its place' },
+              replace_all: { type: 'boolean', description: 'Replace every occurrence instead of exactly one' },
+            },
+            required: ['path', 'old_text', 'new_text'],
+          },
+          describe: input => `edited file: ${text(input.path)}`,
+          run: async input => {
+            const filename = slug ? normalizeFilename(text(input.path), slug) : '';
+            const file = slug ? viewProjectFile(slug, filename) : null;
+            if (!file || file.text === undefined) throw new Error(`There is no text file "${text(input.path)}" to edit. Use write_file to create it.`);
+            const updated = applyEdit(file.text, text(input.old_text), text(input.new_text), input.replace_all === true);
+            return { output: `Edited ${await saveFile(filename, updated)}.` };
+          },
+        },
+        {
+          name: 'delete_file',
+          description: 'Removes a file from the project.',
+          parameters: { type: 'object', properties: { path: pathParam }, required: ['path'] },
+          describe: input => `deleted file: ${text(input.path)}`,
+          run: input => {
+            if (!slug || !deleteProjectFile(slug, normalizeFilename(text(input.path), slug))) throw new Error(`There is no file "${text(input.path)}".`);
+            changed = true;
+            return { output: 'Deleted.' };
+          },
+        },
+      );
+
+      if (colleagues.length > 0) {
+        tools.push({
+          name: 'delegate',
+          description: 'Hands a part of the work to a colleague. They start after you have finished.',
+          parameters: {
+            type: 'object',
+            properties: {
+              employee_id: { type: 'string', description: 'ID of the colleague, from the list you were given' },
+              title: { type: 'string', description: 'Short name of the task, 3 to 7 words' },
+              description: { type: 'string', description: 'What to do: which files to create or change, and what "done" means' },
+            },
+            required: ['employee_id', 'title', 'description'],
+          },
+          describe: input => `delegated: ${text(input.title) || titleFromDescription(text(input.description))}`,
+          run: input => {
+            const target = colleagues.find(a => a.id === text(input.employee_id));
+            if (!target) throw new Error(`No colleague has the ID "${text(input.employee_id)}". Valid IDs: ${colleagues.map(a => `${a.id} (${a.name})`).join(', ')}.`);
+            if (!text(input.description).trim()) throw new Error('description is missing.');
+            if (requested.length >= OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK) throw new Error(`You already delegated ${OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK} tasks, which is the limit. Do the rest yourself.`);
+            requested.push({ targetId: target.id, title: text(input.title).trim() || undefined, description: text(input.description).trim() });
+            return { output: `Queued for ${target.name}. They start after you finish.` };
+          },
+        });
+      }
+
+      if (canAsk) {
+        tools.push({
+          name: 'ask_client',
+          description: 'Asks the client one question and pauses the task until they answer. Only for information that nobody but the client has.',
+          parameters: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
+          describe: () => 'asked the client a question',
+          run: input => {
+            if (!text(input.question).trim()) throw new Error('question is missing.');
+            question = text(input.question).trim();
+            return { output: 'The client has been asked. The task is paused until they answer.', stop: true };
+          },
+        });
+      }
+
+      // Claude searches with its provider's own tools; the others get these
+      if (webOn && agent.api !== 'Anthropic') {
+        if (canSearch) {
+          tools.push({
+            name: 'web_search',
+            description: 'Looks something up on the web and returns an answer with its sources. Use it for current facts: prices, versions, documentation.',
+            parameters: { type: 'object', properties: { query: { type: 'string', description: 'What to find out, as a full question' } }, required: ['query'] },
+            describe: input => `searched the web: ${text(input.query).slice(0, 80)}`,
+            run: async input => {
+              if (++used.searches > MAX_SEARCHES_PER_TASK) throw new Error('No more searches for this task. Work with what you have.');
+              const found = await searchWeb(text(input.query), agent.api, signal);
+              return { output: found.answer, tokens: found.tokens, cost: found.cost };
+            },
+          });
+        }
+        tools.push({
+          name: 'fetch_url',
+          description: 'Returns the text of a public web page.',
+          parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+          describe: input => `read web page: ${text(input.url).slice(0, 100)}`,
+          run: async input => {
+            if (++used.fetches > MAX_FETCHES_PER_TASK) throw new Error('No more pages for this task. Work with what you have.');
+            return { output: await fetchPage(text(input.url), signal) };
+          },
+        });
+      }
+
+      if (canRunChecks) {
+        tools.push({
+          name: 'run_checks',
+          description: "Checks the syntax of the project's files and runs its tests. Returns what passed and what failed.",
+          parameters: { type: 'object', properties: {} },
+          describe: () => 'ran the checks',
+          run: async () => {
+            if (!slug) throw new Error('There is nothing to check yet.');
+            if (++used.checks > MAX_CHECK_RUNS_PER_TASK) throw new Error('No more check runs for this task.');
+            return { output: (await runChecks(slug)).output };
+          },
+        });
+      }
+
+      const run = await runAgent({
+        provider: agent.api,
+        model: agent.model,
+        system: systemPromptFor('tools'),
+        prompt,
+        images,
+        tools,
+        nativeWeb: canSearch && agent.api === 'Anthropic',
+        overBudget: extra => overBudget(extra),
+        onText,
+        signal,
+      });
+
+      response = run.transcript;
+      summary = run.finalText || undefined;
+      tokens = run.tokens;
+      cost = run.cost;
+      model = run.model;
+      problems.push(...run.problems);
+      if (!run.transcript && !question) throw new Error('The model returned an empty response.');
+    };
+
+    /** The model writes one message with everything in it, marked up with tags. */
+    const workWithTags = async () => {
+      const systemPrompt = systemPromptFor('tags');
+      const result = await runModel({
+        provider: agent.api,
+        model: agent.model,
+        prompt,
+        systemPrompt,
+        images,
+        maxTokens: isReview ? OFFICE_CONFIG.REVIEW_MAX_TOKENS : undefined,
+        onText,
+        signal,
+      });
+      if (!result.response) throw new Error('The model returned an empty response.');
+
+      response = result.response;
+      tokens = result.tokens;
+      cost = result.cost;
+      model = result.model;
+
+      question = canAsk ? response.match(/\[QUESTION\]([\s\S]*?)\[\/QUESTION\]/i)?.[1].trim() : undefined;
+      if (question) return;
+
+      summary = response.match(/\[SUMMARY\]([\s\S]*?)\[\/SUMMARY\]/i)?.[1].trim();
+
+      // A file that was cut off by the length limit is incomplete: ask once for just that file again
+      const blocks = parseFileBlocks(response, result.truncated);
+      const saved = new Set(blocks.files.map(f => f.path));
+      const toRepair = Array.from(new Set(blocks.unclosed)).filter(path => !saved.has(path) && !PLACEHOLDER_FILENAMES.has(path.toLowerCase()));
+      for (const path of toRepair.slice(0, OFFICE_CONFIG.MAX_FILE_REPAIRS)) {
+        try {
+          const repair = await runModel({
+            provider: agent.api,
+            model: agent.model,
+            systemPrompt,
+            history: [{ role: 'user', content: prompt }, { role: 'assistant', content: result.response }],
+            signal,
+            prompt: `Your response was cut off in the middle of the file "${path}", so it could not be saved. Send that one file again, complete, in exactly this format and with nothing else:\n[FILE: ${path}]\nfile contents\n[/FILE]`,
+          });
+          tokens += repair.tokens;
+          cost = addCost(cost, repair.cost);
+
+          const resent = parseFileBlocks(repair.response).files[0];
+          if (resent) {
+            // Saved under the path that was asked for, whatever the model called it this time
+            blocks.files.push({ path, content: resent.content });
+            response += `\n\n[FILE: ${path}]\n${resent.content}\n[/FILE]`;
+            continue;
+          }
+        } catch (e) {
+          // reported below like any other file that could not be saved
+        }
+        if (signal.aborted) break;
+        lostFiles.push(path);
+      }
+      lostFiles.push(...toRepair.slice(OFFICE_CONFIG.MAX_FILE_REPAIRS));
+
+      if (wasCancelled()) return;
+
+      if (namesProject) await projectReady(response.match(/\[PROJECT:\s*([^\]\n]+)\]/i)?.[1] || '');
+
+      for (const block of blocks.files) {
+        try {
+          await saveFile(block.path, block.content);
+        } catch (e: any) {
+          // An echoed format example is not a problem worth reporting
+          if (!/placeholder/.test(e.message)) problems.push(`${block.path}: ${e.message}`);
+        }
+      }
+
+      if (result.truncated) problems.push('The response reached the length limit and may be incomplete.');
+
+      // [ASSIGN: id | Short title] description [/ASSIGN] — the title is optional
+      const regex = /\[ASSIGN:\s*([a-zA-Z0-9_-]+)\s*(?:\|\s*([^\]\n]*?))?\s*\]([\s\S]*?)\[\/ASSIGN\]/gi;
+      let match;
+      while ((match = regex.exec(response)) !== null) {
+        requested.push({ targetId: match[1], title: match[2]?.trim() || undefined, description: match[3].trim() });
+      }
+    };
+
+    if (hasRealModel(agent.api) && !withoutTools.has(modelKey)) {
+      try {
+        await workWithTools();
+      } catch (e) {
+        if (!(e instanceof ToolsUnsupportedError)) throw e;
+        // Remembered, so the next task of this model goes straight to the tag format
+        withoutTools.add(modelKey);
+        await workWithTags();
+      }
+    } else {
+      await workWithTags();
     }
+
+    if (tokens) store.addAgentTokens(agent.id, tokens);
 
     // Halted while the model was working: discard the result
     if (wasCancelled()) return;
 
-    let response = result.response;
-    let tokens = result.tokens;
-    let cost = result.cost;
-
-    // The agent needs something from the user before it can do the work: park the task until it is answered
-    const question = canAsk ? response.match(/\[QUESTION\]([\s\S]*?)\[\/QUESTION\]/i)?.[1].trim() : undefined;
-    if (question) {
-      store.updateTask(task.id, {
-        status: 'WAITING_FOR_INPUT',
-        question,
-        response,
-        tokens: (task.tokens || 0) + tokens,
-        cost: addCost(task.tokens ? task.cost : 0, cost),
-        model: result.model,
-      });
-      store.pushEvent(`${agent.name} has a question for you.`);
-      return;
-    }
-
-    const summary = response.match(/\[SUMMARY\]([\s\S]*?)\[\/SUMMARY\]/i)?.[1].trim();
-    const problems: string[] = [];
-
-    // A file that was cut off by the length limit is incomplete: ask once for just that file again
-    const lostFiles: string[] = [];
-    const blocks = parseFileBlocks(response, result.truncated);
-    const saved = new Set(blocks.files.map(f => f.path));
-    const toRepair = Array.from(new Set(blocks.unclosed)).filter(path => !saved.has(path) && !PLACEHOLDER_FILENAMES.has(path.toLowerCase()));
-    for (const path of toRepair.slice(0, OFFICE_CONFIG.MAX_FILE_REPAIRS)) {
-      try {
-        const repair = await runModel({
-          provider: agent.api,
-          model: agent.model,
-          systemPrompt,
-          history: [{ role: 'user', content: prompt }, { role: 'assistant', content: result.response }],
-          signal,
-          prompt: `Your response was cut off in the middle of the file "${path}", so it could not be saved. Send that one file again, complete, in exactly this format and with nothing else:\n[FILE: ${path}]\nfile contents\n[/FILE]`,
-        });
-        if (repair.tokens) store.addAgentTokens(agent.id, repair.tokens);
-        tokens += repair.tokens;
-        cost = addCost(cost, repair.cost);
-
-        const resent = parseFileBlocks(repair.response).files[0];
-        if (resent) {
-          // Saved under the path that was asked for, whatever the model called it this time
-          blocks.files.push({ path, content: resent.content });
-          response += `\n\n[FILE: ${path}]\n${resent.content}\n[/FILE]`;
-          continue;
-        }
-      } catch (e) {
-        // reported below like any other file that could not be saved
-      }
-      if (signal.aborted) break;
-      lostFiles.push(path);
-    }
-    lostFiles.push(...toRepair.slice(OFFICE_CONFIG.MAX_FILE_REPAIRS));
-
-    if (wasCancelled()) return;
-
-    // The office may have changed while the model was working
-    const currentAgents = store.getState();
-
-    if (namesProject) {
-      const proposed = slugifyProjectName(response.match(/\[PROJECT:\s*([^\]\n]+)\]/i)?.[1] || '');
-      const base = proposed && proposed !== PROJECT_NAME_PLACEHOLDER ? proposed : projectNameFromPrompt(task.prompt);
-      slug = claimProjectName(base, task.id, currentAgents);
-      // Saved on the root task so its sub-tasks (and later restarts) find the same folder
-      store.updateTask(task.id, { project: slug });
-    }
-
-    // Files that were already there before history was kept go in first, so this task's commit shows only its own changes
-    await commitProject(slug, 'Files from before history was kept').catch(() => undefined);
-
-    // Parse file creations (each path is validated to stay inside the project)
-    const writtenFiles: string[] = [];
-    for (const block of blocks.files) {
-      const filename = normalizeFilename(block.path, slug);
-      // Models sometimes echo the format example back verbatim
-      if (!filename || PLACEHOLDER_FILENAMES.has(filename.toLowerCase())) continue;
-
-      try {
-        const written = writeProjectFile(slug, filename, block.content);
-        if (!writtenFiles.includes(written)) writtenFiles.push(written);
-      } catch (e: any) {
-        problems.push(`${filename}: ${e.message}`);
-      }
-    }
-
-    if (result.truncated) {
-      problems.push('The response reached the length limit and may be incomplete.');
-    }
+    // A task assigned by the user always ends up with a project, where its report goes
+    if (isRoot && !question) await projectReady();
 
     // One commit per task, in the agent's name: the project's history, and what "undo" takes back
     let commit: string | undefined;
-    if (writtenFiles.length > 0) {
+    if (changed && slug) {
       try {
         commit = await commitProject(slug, `${commitTitle(task)}\n\nTask ${task.id}, by ${agent.name} (${agent.role})`, authorFor(agent.name));
       } catch (e: any) {
@@ -403,7 +657,21 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       }
     }
 
-    if (wasCancelled()) return;
+    const usage = {
+      // A task that was sent back keeps what its first attempt used
+      tokens: (task.tokens || 0) + tokens,
+      cost: addCost(task.tokens ? task.cost : 0, cost),
+      model,
+      files: writtenFiles.length > 0 ? writtenFiles : undefined,
+      commit,
+    };
+
+    // The agent needs something from the user before it can go on: park the task until it is answered
+    if (question) {
+      store.updateTask(task.id, { status: 'WAITING_FOR_INPUT', question, response, ...usage });
+      store.pushEvent(`${agent.name} has a question for you.`, 'question');
+      return;
+    }
 
     // Work with a file missing is not done. What was written stays (and is in the history),
     // so a retry carries on from it instead of starting over.
@@ -412,32 +680,23 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
         status: 'FAILED',
         error: `${lostFiles.length} file${lostFiles.length > 1 ? 's were' : ' was'} cut off and could not be saved: ${lostFiles.join(', ')}. ` +
           `${writtenFiles.length ? `The other ${writtenFiles.length} were saved. ` : ''}Retry to have the rest written.`,
-        tokens: (task.tokens || 0) + tokens,
-        cost: addCost(task.tokens ? task.cost : 0, cost),
-        model: result.model,
-        files: writtenFiles.length > 0 ? writtenFiles : undefined,
-        commit,
+        ...usage,
       });
-      store.pushEvent(`${agent.name}'s task is incomplete: ${lostFiles.length} file${lostFiles.length > 1 ? 's' : ''} could not be saved.`);
+      store.pushEvent(`${agent.name}'s task is incomplete: ${lostFiles.length} file${lostFiles.length > 1 ? 's' : ''} could not be saved.`, 'failed');
       return;
     }
 
-    // Parse assignments (after the files are saved, so delegated work starts from the current project)
-    if (canDelegate) {
-      const currentTree = getTree(rootTask.id, indexTasks(currentAgents));
-      const knownPrompts = currentTree.map(ref => ref.task.prompt);
+    // Delegations start now, after the files are saved, so that work begins from the current project
+    if (canDelegate && requested.length > 0) {
+      const currentAgents = store.getState();
+      const knownPrompts = getTree(rootTask.id, indexTasks(currentAgents)).map(ref => ref.task.prompt);
       const assignments: { target: Agent; title: string; description: string; violation: string }[] = [];
-      // [ASSIGN: id | Short title] description [/ASSIGN] — the title is optional
-      const regex = /\[ASSIGN:\s*([a-zA-Z0-9_-]+)\s*(?:\|\s*([^\]\n]*?))?\s*\]([\s\S]*?)\[\/ASSIGN\]/gi;
-      let match;
-      while ((match = regex.exec(response)) !== null) {
-        const targetId = match[1];
-        const taskDesc = match[3].trim();
-        const isDuplicate = (other: string) => similarity(other, taskDesc) > DUPLICATE_SIMILARITY;
 
-        const targetAgent = currentAgents.find(a => a.id === targetId);
+      for (const request of requested) {
+        const isDuplicate = (other: string) => similarity(other, request.description) > DUPLICATE_SIMILARITY;
+        const targetAgent = currentAgents.find(a => a.id === request.targetId);
         // The same assignment repeated within one response is simply dropped
-        if (!targetAgent || !taskDesc || assignments.some(a => isDuplicate(a.description))) continue;
+        if (!targetAgent || !request.description || assignments.some(a => isDuplicate(a.description))) continue;
 
         // Apply Guardrails
         let violation = '';
@@ -446,7 +705,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
         else if (rankOf(roles, targetAgent.role) <= rankOf(roles, agent.role)) violation = `Cannot delegate to equal or higher rank (${targetAgent.role}).`;
         else if (knownPrompts.some(isDuplicate)) violation = `Duplicate task detected.`;
 
-        assignments.push({ target: targetAgent, title: match[2]?.trim() || titleFromDescription(taskDesc), description: taskDesc, violation });
+        assignments.push({ target: targetAgent, title: request.title || titleFromDescription(request.description), description: request.description, violation });
       }
 
       // Assignments to different people that name the same file would overwrite each other.
@@ -487,20 +746,15 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     }
 
     if (problems.length > 0) {
-      store.pushEvent(`${agent.name}: ${problems.length} problem${problems.length > 1 ? 's' : ''} saving work — see the task details.`);
+      store.pushEvent(`${agent.name}: ${problems.length} problem${problems.length > 1 ? 's' : ''} with this task — see the task details.`);
     }
 
     store.updateTask(task.id, {
       status: 'COMPLETED',
       completedAt: Date.now(),
       response,
-      // A task that was sent back keeps what its first attempt used
-      tokens: (task.tokens || 0) + tokens,
-      cost: addCost(task.tokens ? task.cost : 0, cost),
-      model: result.model,
       summary,
-      files: writtenFiles.length > 0 ? writtenFiles : undefined,
-      commit,
+      ...usage,
       question: undefined,
       reviewStatus: undefined,
       reviewNote: problems.length > 0 ? problems.join('\n') : undefined
@@ -511,7 +765,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     const message: string = e?.message || 'Unknown error';
     const isRateLimit = message.toLowerCase().includes('429') || message.toLowerCase().includes('rate limit');
     store.updateTask(task.id, { status: 'FAILED', error: message });
-    store.pushEvent(`Task for ${agent.name} failed.${isRateLimit ? ' (Rate limit hit — pausing this employee for a minute)' : ''}`);
+    store.pushEvent(`Task for ${agent.name} failed.${isRateLimit ? ' (Rate limit hit — pausing this employee for a minute)' : ''}`, 'failed');
 
     // Do not hammer a provider that just asked us to slow down
     if (isRateLimit) engine.cooldown.set(agent.id, Date.now() + RATE_LIMIT_COOLDOWN_MS);
@@ -546,6 +800,34 @@ const wrapUp = (agents: Agent[]) => {
         continue;
       }
 
+      // Optional: check the files and run the tests. A failure gets one round of fixing, then a second run.
+      if (checksAllowed()) {
+        if (engine.verifying.has(root.id)) continue;
+        const runs = root.checkRuns || 0;
+        const failed = root.checkPassed === false;
+        const fixes = subtasks.filter(ref => ref.task.title === FIX_CHECKS_TITLE);
+        // Checks stored by an earlier run of this task stay as they are once a fix was tried
+        const fixedSince = fixes.some(ref => ref.task.status === 'COMPLETED');
+
+        if (runs === 0 || (runs === 1 && failed && fixedSince)) {
+          const project = root.project;
+          engine.verifying.add(root.id);
+          runChecks(project)
+            .then(result => store.updateTask(root.id, { checkRuns: runs + 1, checkPassed: result.ran ? result.passed : undefined, checkOutput: result.output }))
+            .catch(e => store.updateTask(root.id, { checkRuns: runs + 1, checkPassed: undefined, checkOutput: `The checks could not be run: ${e.message}` }))
+            .finally(() => engine.verifying.delete(root.id));
+          continue;
+        }
+        if (runs === 1 && failed && fixes.length === 0) {
+          store.createTask(agent.id, `The project's checks failed. Fix the files so that they pass, changing as little as possible.\n\n${root.checkOutput || ''}`, 'Office', {
+            parentId: root.id,
+            kind: 'REVIEW',
+            title: FIX_CHECKS_TITLE,
+          });
+          continue;
+        }
+      }
+
       const rootRef = { task: root, agent };
       const report = buildReport(rootRef, tree, projectPath(root.project));
       store.updateTask(root.id, { report });
@@ -555,7 +837,7 @@ const wrapUp = (agents: Agent[]) => {
         writeProjectFile(root.project, reportFilename(sequence), report);
         writeProjectFile(root.project, transcriptFilename(sequence), buildTranscript(rootRef, tree));
         void commitProject(root.project, `Add the report for: ${commitTitle(root)}`).catch(() => undefined);
-        store.pushEvent(`Report ready: ${root.project}`);
+        store.pushEvent(`Report ready: ${root.project}`, 'report');
       } catch (e: any) {
         store.pushEvent(`Could not save the report files for ${root.project}: ${e.message}`);
       }
@@ -566,7 +848,8 @@ const wrapUp = (agents: Agent[]) => {
 /** Spending this calendar month against the cap the user set (0 = no cap). */
 export const monthStatus = (now = Date.now()) => {
   const cap = Number(store.getMeta('monthlyCap')) || 0;
-  const spent = store.spendSince(startOfMonth(now));
+  // Deleted tasks still count: what they cost was spent
+  const spent = store.spendSince(startOfMonth(now)) + store.deletedSpend(startOfMonth(now));
   return { cap, spent, reached: cap > 0 && spent >= cap };
 };
 
@@ -611,9 +894,11 @@ const tick = () => {
 
     // Nothing changed since a tick that found nothing to do: skip reading the whole office again
     const waiting = engine.running.size > 0
+      || engine.verifying.size > 0
       || Array.from(engine.cooldown.values()).some(until => until > now)
       || store.hasDueTemplate(now);
-    if (!waiting && engine.idleKey === `${store.getVersion()}:${monthKey}`) return;
+    const startKey = `${store.getVersion()}:${monthKey}`;
+    if (!waiting && engine.idleKey === startKey) return;
 
     const month = monthStatus(now);
     let agents = store.getState();
@@ -637,7 +922,7 @@ const tick = () => {
     // The monthly cap stops new work from starting; whatever is running finishes
     if (month.reached && store.getMeta('capNotified') !== monthKey) {
       store.setMeta('capNotified', monthKey);
-      store.pushEvent(`Monthly cap of $${month.cap.toFixed(2)} reached. No new tasks will start until you raise it or the month ends.`);
+      store.pushEvent(`Monthly cap of $${month.cap.toFixed(2)} reached. No new tasks will start until you raise it or the month ends.`, 'limit');
     }
 
     if (!store.isPaused() && !month.reached) {
@@ -658,8 +943,8 @@ const tick = () => {
 
     wrapUp(agents);
 
-    // Anything this tick did changed the version, so the key only matches once the office is at rest
-    engine.idleKey = `${store.getVersion()}:${monthKey}`;
+    // Idle only if this tick changed nothing: a task it queued (a review, a fix) must be picked up by the next one
+    engine.idleKey = `${store.getVersion()}:${monthKey}` === startKey ? startKey : undefined;
   } catch (e) {
     console.error('Office engine tick failed:', e);
   }

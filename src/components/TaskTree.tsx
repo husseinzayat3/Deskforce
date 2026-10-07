@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2, Download, FileText, RotateCcw, Pencil, FolderPlus, FolderOpen, FolderTree, GitCommitHorizontal, BookmarkPlus, Send, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2, Download, FileText, RotateCcw, Pencil, FolderPlus, FolderOpen, FolderTree, GitCommitHorizontal, BookmarkPlus, Send, X, Archive, ArchiveRestore, Trash2, MoreHorizontal } from 'lucide-react';
 import { Agent, TaskItem, TaskStatus } from '../lib/types';
 import { OFFICE_CONFIG, FINISHED_STATUSES, budgetOf, cleanPrompt, formatBudget, formatUsage, projectOf, sumUsage, taskTitle } from '../lib/officeConfig';
 import ProjectBrowser from './ProjectBrowser';
@@ -21,6 +21,8 @@ interface TaskTreeProps {
   live: Record<string, string>;
   notify: (message: string) => void;
   onAnswer: (taskId: string, text: string) => void;
+  onArchive: (taskId: string, archived: boolean) => void;
+  onDelete: (taskId: string, withProject: boolean) => void;
   onSaveTemplate: (agent: Agent, task: TaskItem) => void;
   onCancel: (agentId: string, taskId: string) => void;
   onApprove: (agentId: string, taskId: string) => void;
@@ -76,10 +78,20 @@ const textVersion = (task: TaskItem) => `${task.status}:${task.completedAt || 0}
 const descendants = (node: TaskNode): TaskNode[] =>
   node.children.flatMap(c => [c, ...descendants(c)]);
 
-export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, onSaveTemplate, onCancel, onApprove, onRetry, onRevise, onContinue }: TaskTreeProps) {
+export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, onArchive, onDelete, onSaveTemplate, onCancel, onApprove, onRetry, onRevise, onContinue }: TaskTreeProps) {
   const [composer, setComposer] = useState<Composer | null>(null);
   const [composerText, setComposerText] = useState('');
   const [composerBudget, setComposerBudget] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
+  // Tasks whose less-used actions are shown
+  const [moreOpen, setMoreOpen] = useState<Set<string>>(new Set());
+
+  const confirmDelete = (task: TaskItem, subtasks: number) => {
+    const what = `"${taskTitle(task)}"${subtasks ? ` and its ${subtasks} sub-task${subtasks > 1 ? 's' : ''}` : ''}`;
+    if (!window.confirm(`Delete ${what} for good?\n\nWhat they cost stays counted in this month's spending.`)) return;
+    const withProject = Boolean(task.project) && window.confirm(`Also delete the project's files (${task.project})?\n\nOK deletes the folder and its history. Cancel keeps the files.`);
+    onDelete(task.id, withProject);
+  };
   // The project whose files are open, optionally on what one task changed
   const [browsing, setBrowsing] = useState<{ project: string; commit?: string } | null>(null);
 
@@ -163,6 +175,9 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
     const branchTotal = sumUsage([task, ...subtree.map(n => n.task)]);
     const branchUsage = hasChildren ? formatUsage(branchTotal.tokens, branchTotal.cost) : '';
     const finished = FINISHED_STATUSES.has(task.status);
+    // Less-used actions (request changes, continue, template, archive, delete) sit behind "More"
+    const hasMore = depth === 0 || (task.status === 'COMPLETED' && !isReview && !isMeeting);
+    const showMore = hasMore && moreOpen.has(task.id);
     const composing = composer?.taskId === task.id ? composer.mode : null;
 
     const submitComposer = () => {
@@ -244,10 +259,9 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
                     href={`/api/workspace?project=${projectOf(task)}&download=1`}
                     download
                     title="Download every file of this project, including the report, as a .zip"
-                    style={{ textDecoration: 'none' }}
                   >
                     <Download size={11} />
-                    Output (.zip)
+                    Download
                   </a>
                 </>
               )}
@@ -300,6 +314,44 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
                 </button>
               )}
 
+              {hasMore && (
+                <button
+                  id={`task-more-${task.id}`}
+                  className={`${styles.cancelBtn} ${styles.quietBtn}`}
+                  onClick={() => toggle(setMoreOpen, task.id)}
+                  aria-expanded={showMore}
+                  title={showMore ? 'Hide the other actions' : 'Request changes, continue the project, archive, delete…'}
+                >
+                  <MoreHorizontal size={12} />
+                  {showMore ? 'Less' : 'More'}
+                </button>
+              )}
+
+              {showMore && (
+              <>
+              {depth === 0 && finished && subtree.every(n => FINISHED_STATUSES.has(n.task.status)) && (
+                <>
+                  <button
+                    id={`task-archive-${task.id}`}
+                    className={`${styles.cancelBtn} ${styles.quietBtn}`}
+                    onClick={() => onArchive(task.id, !task.archived)}
+                    title={task.archived ? 'Show this task on the board again' : 'Hide this task from the board. Nothing is deleted.'}
+                  >
+                    {task.archived ? <ArchiveRestore size={11} /> : <Archive size={11} />}
+                    {task.archived ? 'Unarchive' : 'Archive'}
+                  </button>
+                  <button
+                    id={`task-delete-${task.id}`}
+                    className={styles.cancelBtn}
+                    onClick={() => confirmDelete(task, subtree.length)}
+                    title="Delete this task and its sub-tasks for good"
+                  >
+                    <Trash2 size={11} />
+                    Delete
+                  </button>
+                </>
+              )}
+
               {depth === 0 && (
                 <button
                   id={`task-template-${task.id}`}
@@ -315,7 +367,7 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
               {task.status === 'COMPLETED' && !isReview && !isMeeting && (
                 <button
                   id={`task-revise-${task.id}`}
-                  className={styles.cancelBtn}
+                  className={`${styles.cancelBtn} ${styles.quietBtn}`}
                   onClick={() => openComposer(task.id, 'revise')}
                   title="Send this task back with your feedback"
                 >
@@ -346,6 +398,9 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
                   <FolderPlus size={11} />
                   Continue project
                 </button>
+              )}
+
+              </>
               )}
 
               {task.status === 'AWAITING_APPROVAL' ? (
@@ -442,7 +497,7 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
           )}
 
           {(branchUsage || (depth === 0 && usage)) && (
-            <div className={styles.detailTokens} style={{ marginTop: 4 }}>
+            <div className={styles.totals}>
               {branchUsage && <>Total with sub-tasks: {branchUsage}</>}
               {depth === 0 && <>{branchUsage ? ' · ' : ''}Budget: ${(branchTotal.cost || 0).toFixed(4)} of {formatBudget(budgetOf(task))}</>}
             </div>
@@ -453,6 +508,22 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
               <div className={styles.detailPrompt}>{cleanPrompt(task.prompt)}</div>
               {task.response && <div className={styles.detailResponse}>{fullTexts[task.id]?.response ?? task.response}</div>}
               {task.error && <div className={styles.detailError}>{task.error}</div>}
+              {task.attachments && task.attachments.length > 0 && (
+                <div className={styles.detailFiles}>
+                  <strong>Attached by you:</strong>
+                  <ul>
+                    {task.attachments.slice(0, 20).map(f => <li key={f}>{f}</li>)}
+                    {task.attachments.length > 20 && <li>…and {task.attachments.length - 20} more</li>}
+                  </ul>
+                </div>
+              )}
+              {task.checkOutput && (
+                <div className={task.checkPassed === false ? styles.detailError : styles.detailResponse}>
+                  <strong>Checks{task.checkPassed === false ? ' (failed)' : task.checkPassed ? ' (passed)' : ''}</strong>
+                  {'\n\n'}
+                  {task.checkOutput}
+                </div>
+              )}
               {task.clarifications && (
                 <div className={styles.detailSummary}>
                   <strong>Questions and your answers:</strong>
@@ -483,7 +554,7 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
                 </div>
               )}
               {usage && (
-                <div className={styles.detailTokens} style={{ marginTop: 0 }}>
+                <div className={styles.detailTokens}>
                   <strong>Usage:</strong> {usage}{task.model ? ` · ${task.model}` : ''}
                 </div>
               )}
@@ -519,6 +590,8 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
     );
   }
 
+  const archivedCount = roots.filter(r => r.task.archived).length;
+
   return (
     <>
       {browsing && (
@@ -530,7 +603,15 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
           notify={notify}
         />
       )}
-      <ul className={styles.tree}>{roots.map(r => renderNode(r, 0))}</ul>
+      <ul className={styles.tree}>{roots.filter(r => showArchived || !r.task.archived).map(r => renderNode(r, 0))}</ul>
+      {archivedCount > 0 && (
+        <button
+          onClick={() => setShowArchived(!showArchived)}
+          style={{ margin: '8px auto', display: 'block', border: 'none', background: 'none', color: '#64748b', fontSize: 11, cursor: 'pointer', textDecoration: 'underline' }}
+        >
+          {showArchived ? 'Hide archived tasks' : `Show ${archivedCount} archived task${archivedCount > 1 ? 's' : ''}`}
+        </button>
+      )}
     </>
   );
 }

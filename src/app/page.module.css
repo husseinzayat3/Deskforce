@@ -2,27 +2,32 @@
   display: flex;
   height: 100vh;
   width: 100vw;
-  padding: 24px;
-  gap: 24px;
+  padding: 16px;
+  gap: 16px;
+  overflow: hidden;
   background: radial-gradient(circle at top left, #1e293b, #0f172a);
 }
 
 .canvasContainer {
   flex: 1;
+  min-width: 0;
   display: flex;
   justify-content: center;
   align-items: center;
   background: rgba(0, 0, 0, 0.2);
   border-radius: 20px;
-  padding: 24px;
+  padding: 16px;
   border: 1px solid rgba(255, 255, 255, 0.05);
+  /* Lets the map size itself from the room that is actually left for it */
+  container-type: size;
 }
 
+/* A square as large as the space allows, in either direction */
 .canvasWrapper {
   position: relative;
-  width: 100%;
-  max-width: 900px;
-  aspect-ratio: 1 / 1; /* Keep it square like the generated image */
+  width: min(100cqw, 100cqh);
+  aspect-ratio: 1 / 1;
+  flex-shrink: 0;
   border-radius: 16px;
   overflow: hidden;
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);

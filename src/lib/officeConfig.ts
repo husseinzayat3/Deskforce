@@ -234,7 +234,7 @@ export const titleFromDescription = (description: string) => {
 
 /** What a task is called on the board and in reports. */
 export const taskTitle = (task: TaskItem) => {
-  if (task.kind === 'REVIEW') return 'Final review of the project';
+  if (task.kind === 'REVIEW') return task.title || 'Final review of the project';
   if (task.kind === 'MEETING') return task.title || 'Meeting';
   return task.title || cleanPrompt(task.prompt).split('\n')[0].trim();
 };

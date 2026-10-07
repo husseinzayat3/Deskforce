@@ -17,8 +17,14 @@ A virtual office where AI agents work as a team. Hire employees, give the CEO a 
 - **Task board** — a nested view of each task and its sub-tasks, with progress, tokens, estimated cost, live output, and buttons to retry, request changes or continue the project.
 - **Costs** — spending per day, per employee and per model, a budget per task, and a monthly cap that stops new work when it is reached.
 - **Templates and schedules** — save a task to run again with a click, or every day or week at a set time.
-- **Real output** — agents write every file of the project themselves, into a per-task folder under `workspace/projects/`. Nothing is installed or executed on your machine.
-- **Desktop app** — one command packages the whole thing as a macOS app, with a settings screen for your API keys.
+- **Real tools, real output** — agents read, write and edit the project's files through tool calls, into a per-task folder under `workspace/projects/`. Models that cannot call tools fall back to a tagged text format.
+- **Web access** — agents search the web and read pages for current facts instead of inventing them. They can only reach public websites.
+- **Attachments** — give a task files or images to work from, or a whole folder to start the project from.
+- **Edit, archive, delete** — change an employee's role or model without losing their history; hide finished tasks or delete them with their files.
+- **Checks (opt-in)** — the office can check the syntax of a project's files and run its tests, and have failures fixed. Off by default; on macOS it runs sandboxed.
+- **Office files** — export the roles, employees and templates of an office as one file and import it elsewhere.
+- **Notifications** — a system notification when a report is ready, an employee has a question, or a task fails.
+- **Desktop app** — one command packages the whole thing as a macOS app for Apple Silicon and Intel, with a settings screen for your API keys.
 
 ## Getting started
 
@@ -59,15 +65,19 @@ Open `http://localhost:3000`, hire a few employees, and assign a task to the mos
 
 ## How it works
 
-The office engine (`src/lib/server/engine.ts`) starts with the server and checks the queue every second. Each task is sent to the employee's AI provider together with the list of colleagues and the files already in the project. The agent replies in plain text and can use these tags:
+The office engine (`src/lib/server/engine.ts`) starts with the server and checks the queue every second. Each task is given to the employee's model together with the client's request, the manager's plan, what colleagues finished, and the project's files. The model then works by calling tools until it replies with a summary:
 
-| Tag | Effect |
+| Tool | Effect |
 | --- | --- |
-| `[PROJECT: short-name]` | Names the project folder (first response of a new task) |
-| `[ASSIGN: colleague_id \| Short title] task [/ASSIGN]` | Delegates a sub-task to a more junior colleague |
-| `[FILE: path/name.ext] contents [/FILE]` | Writes a file into the project folder |
-| `[QUESTION] text [/QUESTION]` | Pauses the task and asks you |
-| `[SUMMARY] text [/SUMMARY]` | Records a summary for you to review |
+| `name_project` | Names the folder of a new project |
+| `list_files`, `read_file` | Look at the project as it is now |
+| `write_file`, `edit_file`, `delete_file` | Create, change or remove a file in the project folder |
+| `delegate` | Hands a sub-task to a more junior colleague |
+| `ask_client` | Pauses the task and asks you |
+| `web_search`, `fetch_url` | Look something up (Claude uses Anthropic's own web tools instead) |
+| `run_checks` | Checks syntax and runs tests, when you turned that on |
+
+Every task that changes files becomes one git commit in the employee's name. A model that cannot call tools (for example `llama3` on Ollama) is given the same abilities as tags in plain text, such as `[FILE: path] … [/FILE]`; it has no web access and cannot run checks.
 
 The guardrail limits and the per-model prices used for cost estimates live in `src/lib/officeConfig.ts`. Costs are estimates from list prices; local Ollama models count as free.
 
@@ -76,8 +86,14 @@ The guardrail limits and the per-model prices used for cost estimates live in `s
 | Frontend | Next.js (React), `framer-motion` |
 | Backend | Next.js API routes, plus an in-process engine that runs the tasks |
 | Database | `better-sqlite3` |
-| AI | OpenAI SDK (OpenAI and Grok), Anthropic SDK, Gemini and Ollama HTTP APIs, all streamed |
+| AI | OpenAI SDK (OpenAI and Grok), Anthropic SDK, Gemini and Ollama HTTP APIs, all streamed, with native tool calling |
 | History | `isomorphic-git` (no `git` program needed) |
+
+## Checks
+
+In Settings, "Run checks and tests on this computer" lets the office verify a project: JSON, Python, JavaScript and Dart files are checked for syntax, and Python (`unittest`) and JavaScript (`node --test`) tests are run. When a task tree finishes with failing checks, its owner gets one round to fix them and the checks run again; the result is in the report. Agents can also call the checks themselves while working.
+
+Tests are code that a model wrote. The commands are fixed (never chosen by a model), run without the office's environment, and on macOS inside a sandbox with no network, no writing outside the project, and no reading of your documents, keys or the office's own data. On other systems there is no sandbox, so leave it off unless the office already runs in a container. Nothing is installed: tests can only use what is already on the computer.
 
 ## Tests
 
@@ -89,14 +105,29 @@ npm run lint
 ## Desktop app (macOS)
 
 ```bash
-npm run dist:mac
+npm run dist:mac                  # for this Mac's processor
+MAC_ARCH=both npm run dist:mac    # one app for Apple Silicon, one for Intel
 ```
 
 This builds `dist-desktop/My Office-<version>-<arch>.dmg`. Add `-- --dir` to build only the `.app`, which is quicker when you just want to try it.
 
-The app contains the server and the engine, and listens on this computer only. Its data lives in `~/Library/Application Support/My Office/` (the database, a `projects` folder, and `server.log`); "Open folder" on a task shows the project in Finder. There is no `.env.local` in the app: enter your API keys in its settings. Closing the window keeps the agents working; quit the app to stop them.
+The app contains the server and the engine, and listens on this computer only. Its data lives in `~/Library/Application Support/My Office/` (the database, a `projects` folder, and `server.log`); "Open folder" on a task shows the project in Finder. There is no `.env.local` in the app: enter your API keys in its settings. Closing the window keeps the agents working, and the app notifies you when something needs you; quit the app to stop them.
 
-The app is not signed with an Apple Developer ID. It runs on the Mac that built it; on another Mac, open it the first time with right-click → Open.
+**Signing.** Without an Apple Developer ID the app is ad-hoc signed: it runs on the Mac that built it, and on another Mac it has to be opened the first time with right-click → Open. To distribute it properly, set these before building (see the top of `scripts/build-desktop.sh`):
+
+```bash
+export CSC_NAME="Developer ID Application: Your Name (TEAMID)"   # the certificate in your keychain
+export APPLE_ID=you@example.com APPLE_APP_SPECIFIC_PASSWORD=xxxx-xxxx-xxxx-xxxx APPLE_TEAM_ID=TEAMID   # notarisation
+```
+
+**Updates.** A signed app can update itself. Tell the build where new versions will be, then upload the `.dmg`, the `.zip` and `latest-mac.yml` of each release there:
+
+```bash
+export MY_OFFICE_UPDATE_REPO=owner/repo        # a public GitHub repository's releases, or
+export MY_OFFICE_UPDATE_URL=https://example.com/downloads
+```
+
+The app then checks at start and every few hours, downloads a newer version in the background, and installs it when it is next quit. Bump `version` in `electron/package.json` for each release.
 
 ## Docker
 
@@ -115,6 +146,8 @@ The office has no login, so it is built to be used from the computer it runs on:
 - Requests that change anything are accepted only from the office page itself, so another website open in your browser cannot assign tasks or change settings.
 - The browser cannot call a model or write a file directly; it can only queue tasks. Files are written by the engine, and only inside the task's project folder.
 - A project preview is served from a separate local address: the page a model wrote cannot reach the office.
+- Agents with web access can fetch public pages only. Addresses on this computer or a private network are refused, so an agent cannot be talked into reading the office's own API or a device on your network.
+- Running checks is off by default; see [Checks](#checks) for what it does and how it is contained.
 - Halting the office, or removing an employee, stops their model calls straight away.
 
 Do not expose it to the internet without adding authentication first.

@@ -26,6 +26,11 @@ const TASK_MIGRATIONS: Record<string, string> = {
   clarifications: 'TEXT',
   participants: 'TEXT', // JSON array of agent ids (meetings)
   blockedBy: 'TEXT',
+  archived: 'INTEGER',
+  attachments: 'TEXT', // JSON array of project-relative paths
+  checkRuns: 'INTEGER',
+  checkPassed: 'INTEGER',
+  checkOutput: 'TEXT',
 };
 
 const open = () => {
@@ -106,6 +111,9 @@ const open = () => {
 
   const agentColumns = db.prepare('PRAGMA table_info(agents)').all() as { name: string }[];
   if (!agentColumns.some(c => c.name === 'model')) db.exec('ALTER TABLE agents ADD COLUMN model TEXT');
+
+  const eventColumns = db.prepare('PRAGMA table_info(events)').all() as { name: string }[];
+  if (!eventColumns.some(c => c.name === 'kind')) db.exec("ALTER TABLE events ADD COLUMN kind TEXT NOT NULL DEFAULT 'info'");
 
   const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
   for (const [column, type] of Object.entries(TASK_MIGRATIONS)) {

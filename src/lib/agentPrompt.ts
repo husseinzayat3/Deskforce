@@ -64,26 +64,43 @@ export interface PromptContext {
   canAsk: boolean;
   /** Plan agreed in a meeting about this piece of work, if one was held. */
   meetingPlan?: string;
+  /** 'tools': the model works by calling functions. 'tags': it writes everything into one tagged message. */
+  mode: 'tools' | 'tags';
+  /** Whether the agent can search the web and read pages (tools mode only). */
+  webAccess: boolean;
+  /** Whether the agent can run the project's checks (tools mode only). */
+  canRunChecks: boolean;
+  /** Files the client gave with the request, as paths inside the project. */
+  attachments: string[];
 }
+
+/** File contents shown up front in tools mode; anything else is read on demand. */
+const TOOLS_FILE_CONTEXT_CHARS = 6000;
 
 /**
  * Everything an agent needs to do its part without losing what the rest of the team did:
  * the client's request, the manager's plan, what colleagues already finished, and the real project files.
  */
 export const buildSystemPrompt = (ctx: PromptContext) => {
-  const { agent, task, rootTask, parent, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents, projectHistory, roleInstructions, canAsk, meetingPlan } = ctx;
+  const { agent, task, rootTask, parent, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents, projectHistory, roleInstructions, canAsk, meetingPlan, mode, webAccess, canRunChecks, attachments } = ctx;
+  const tools = mode === 'tools';
   const sections: string[] = [];
 
   sections.push(
     `You are ${agent.name}, the ${agent.role} of a software company. You work inside an automated office: nobody reads your message as a chat. ` +
-    `Only the tags described below have any effect, so all work you produce must be saved with them.` +
+    (tools
+      ? `Only your tool calls have any effect: a file exists only once you have written it with a tool, and text in your messages is never saved as a file.`
+      : `Only the tags described below have any effect, so all work you produce must be saved with them.`) +
     (roleInstructions.trim() ? `\n\nYour role: ${roleInstructions.trim()}` : '')
   );
 
+  const namingRules = `2 to 4 lowercase words joined by hyphens that describe what is being built, for example voice-calculator or customer-feedback-portal. ` +
+    `Name the product, not the request: no filler words such as "lets", "start", "small", "task" or "project".`;
   sections.push(namesProject
-    ? `You are starting a new project. Name it by including this tag once in your response:\n[PROJECT: ${PROJECT_NAME_PLACEHOLDER}]\n` +
-      `Replace ${PROJECT_NAME_PLACEHOLDER} with 2 to 4 lowercase words joined by hyphens that describe what is being built, for example voice-calculator or customer-feedback-portal. ` +
-      `Name the product, not the request: no filler words such as "lets", "start", "small", "task" or "project".`
+    ? (tools
+      ? `You are starting a new project. Before anything else, call name_project once with ${namingRules}`
+      : `You are starting a new project. Name it by including this tag once in your response:\n[PROJECT: ${PROJECT_NAME_PLACEHOLDER}]\n` +
+        `Replace ${PROJECT_NAME_PLACEHOLDER} with ${namingRules}`)
     : `Project folder: ${slug}\nAll file paths are relative to this folder. Do not prefix paths with the folder name.`
   );
 
@@ -117,14 +134,20 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
 
   if (existingFiles.length > 0) {
     const listed = existingFiles.slice(0, OFFICE_CONFIG.MAX_FILES_IN_PROMPT).map(f => `- ${f}`).join('\n');
-    const budget = isReview ? OFFICE_CONFIG.REVIEW_FILE_CONTEXT_CHARS : OFFICE_CONFIG.FILE_CONTEXT_CHARS;
+    const budget = tools ? TOOLS_FILE_CONTEXT_CHARS : isReview ? OFFICE_CONFIG.REVIEW_FILE_CONTEXT_CHARS : OFFICE_CONFIG.FILE_CONTEXT_CHARS;
     const shown = selectFileContents(fileContents, task.prompt, budget);
+    const complete = shown.length === Object.keys(fileContents).length;
     sections.push(
       `Files that exist in the project right now:\n${listed}` +
-      (shown.length > 0 ? `\n\nTheir current contents (this is the real state of the project, including your colleagues' work):\n${shown.join('\n\n')}` : '')
+      (shown.length > 0 ? `\n\n${tools && !complete ? 'Current contents of some of them' : 'Their current contents'} (this is the real state of the project, including your colleagues' work):\n${shown.join('\n\n')}` : '') +
+      (tools && !complete ? `\n\nRead any other file you need with read_file before relying on it or changing it.` : '')
     );
   } else if (!namesProject) {
     sections.push('The project folder is empty so far.');
+  }
+
+  if (attachments.length > 0) {
+    sections.push(`The client attached these files to the request. They are in the project folder; use them:\n${attachments.slice(0, 40).map(f => `- ${f}`).join('\n')}${attachments.length > 40 ? `\n- …and ${attachments.length - 40} more` : ''}`);
   }
 
   if (meetingPlan) {
@@ -143,13 +166,65 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     );
   }
 
+  if (tools) {
+    sections.push(
+      `How to work:\n` +
+      `- Deliver finished, working output: no placeholders, no "TODO", no omitted parts.\n` +
+      `- Create a file, or replace one completely, with write_file. Change part of an existing file with edit_file, which keeps everything else as it is. Never drop work a colleague already did.\n` +
+      `- Read a file before you edit it, and stay consistent with the existing files: same names, imports and structure.\n` +
+      `- File naming: give every file a specific name that says what it contains, and follow the conventions and folder layout of its language or framework (for example lib/screens/calculator_screen.dart). Put documents in a docs/ folder with hyphenated names. Never use generic names such as file.txt, output.md or notes.txt.\n` +
+      (canRunChecks
+        ? `- You can call run_checks to check the syntax of the project's files and run its tests. Use it after writing code, and fix what it reports. There is no package manager: code may only depend on what is already installed.\n`
+        : `- Nothing is run for you: there is no project generator, package manager, compiler or test runner. Write every file the project needs yourself, including its configuration files (for example pubspec.yaml or package.json), and never ask anyone to run a command.\n`) +
+      (webAccess
+        ? `- For anything that depends on the outside world (prices, versions, how an API works today), look it up with web_search instead of relying on memory. Never invent figures. In documents, give the source and date of facts you looked up.`
+        : `- You cannot look anything up. Do not present prices, versions or other changing facts as current: mark them as needing to be checked.`)
+    );
+
+    if (isReview) {
+      sections.push(
+        `This is the final review of the whole project. Read the project files and compare them with the client's original request. ` +
+        `If anything is missing, incomplete, inconsistent or would not run, fix it now. Leave files that are already correct untouched. ` +
+        `In your summary, give the final assessment for the client: what was delivered, how to run or use it, and any known gaps.`
+      );
+    }
+
+    if (colleagues.length > 0) {
+      const roster = colleagues.map(a => `- ${a.name} (Role: ${a.role}, ID: ${a.id})`).join('\n');
+      sections.push(
+        `You can hand parts of this work to these colleagues with the delegate tool:\n${roster}\n\n` +
+        `Delegation rules:\n` +
+        `- Do the planning and any shared setup yourself first, such as the project's configuration files, and write them before you delegate.\n` +
+        `- If the work is small, do it yourself instead of delegating.\n` +
+        `- At most ${OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK} assignments, each one different.\n` +
+        `- Each assignment must stand on its own: say exactly which files to create or change and what "done" means. Your colleague sees your messages, the client's request and the project files, nothing else.\n` +
+        `- Give different colleagues different files, so they do not overwrite each other.\n` +
+        `- Do not create assignments that only review, research or test without producing files. A final review of the whole project happens automatically.\n` +
+        `- Delegated work starts after you finish, so do not wait for it.`
+      );
+    } else {
+      sections.push('You cannot delegate this task. Do all of the work yourself.');
+    }
+
+    if (canAsk) {
+      sections.push(
+        `If the task cannot be done properly without information that only the client has (not something you can reasonably decide yourself), call ask_client instead of guessing. ` +
+        `The task then waits and comes back to you with the answer. Ask at most one question, and only when a wrong guess would waste the work. Otherwise decide, state your assumption in your summary, and carry on.`
+      );
+    }
+
+    sections.push(`When the work is done, reply with a summary and no tool call (2 to 4 sentences: what you did, which files you wrote, anything still open). That reply ends the task.`);
+    return sections.join('\n\n');
+  }
+
   sections.push(
     `How to work:\n` +
     `- Deliver finished, working output. Write every file in full: no placeholders, no "TODO", no "rest of the code here", no omitted parts.\n` +
     `- To change an existing file, write the whole file again with your change applied and everything else kept. Never drop work a colleague already did.\n` +
     `- Stay consistent with the existing files: same names, imports and structure.\n` +
     `- Code or text that appears in your message outside a [FILE] tag is lost.\n` +
-    `- Nothing is run for you: there is no project generator, package manager, compiler or test runner. Write every file the project needs yourself, including its configuration files (for example pubspec.yaml or package.json), and never ask anyone to run a command.`
+    `- Nothing is run for you: there is no project generator, package manager, compiler or test runner. Write every file the project needs yourself, including its configuration files (for example pubspec.yaml or package.json), and never ask anyone to run a command.\n` +
+    `- You cannot look anything up. Do not present prices, versions or other changing facts as current: mark them as needing to be checked.`
   );
 
   if (isReview) {

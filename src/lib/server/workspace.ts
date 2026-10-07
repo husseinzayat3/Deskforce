@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { createZip, ZipEntry } from '../zip';
-import { PROJECTS_DIR } from './paths';
+import { DATA_DIR, PROJECTS_DIR } from './paths';
+import { Attachment } from '../types';
 
 // The `turbopackIgnore` comments below mark paths inside the data folder, which is chosen at
 // run time: without them the bundler would try to package the whole checkout with the server.
@@ -97,6 +98,115 @@ export const writeProjectFile = (project: string, filename: string, content: str
   fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(filePath), { recursive: true });
   fs.writeFileSync(/* turbopackIgnore: true */ filePath, stripFences(content), 'utf-8');
   return path.relative(projectDir, filePath);
+};
+
+/** Writes raw bytes into the project (attachments may be images or other binary files). */
+const writeProjectBytes = (project: string, filename: string, data: Buffer) => {
+  const projectDir = projectDirOf(project);
+  const filePath = resolveInside(projectDir, filename);
+  if (!filePath) throw new Error(`Unsafe path: ${filename}`);
+  fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(/* turbopackIgnore: true */ filePath, data);
+  return path.relative(projectDir, filePath);
+};
+
+/** Removes one file of the project. Returns false when it did not exist. */
+export const deleteProjectFile = (project: string, relPath: string) => {
+  const filePath = resolveInside(projectDirOf(project), relPath);
+  if (!filePath) throw new Error(`Unsafe path: ${relPath}`);
+  if (!fs.existsSync(/* turbopackIgnore: true */ filePath) || !fs.statSync(/* turbopackIgnore: true */ filePath).isFile()) return false;
+  fs.rmSync(/* turbopackIgnore: true */ filePath);
+  return true;
+};
+
+/** Removes a project folder with everything in it, history included. */
+export const deleteProject = (project: string) => {
+  fs.rmSync(/* turbopackIgnore: true */ projectDirOf(project), { recursive: true, force: true });
+};
+
+// --- Attachments ------------------------------------------------------------------
+
+/** Files given with a task wait here until the task has a project folder to put them in. */
+const ATTACHMENTS_DIR = path.join(/* turbopackIgnore: true */ DATA_DIR, 'attachments');
+
+export const ATTACHMENT_LIMITS = { files: 300, totalBytes: 8_000_000 };
+
+/** Folders that are never worth importing with an attached folder. */
+const SKIPPED_ON_IMPORT = /(^|\/)(node_modules|\.git|\.dart_tool|build|dist|\.next|\.idea|\.gradle|Pods|__pycache__|\.venv|venv|\.DS_Store)(\/|$)/;
+
+const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+const MAX_IMAGES_FOR_MODEL = 4;
+const MAX_IMAGE_BYTES = 3_500_000;
+
+const stagingDir = (taskId: string) => {
+  if (!/^[a-z0-9]+$/i.test(taskId)) throw new Error('Invalid task');
+  return path.join(/* turbopackIgnore: true */ ATTACHMENTS_DIR, taskId);
+};
+
+/**
+ * Keeps a task's attachments until its project exists. Single files will land in `inputs/`;
+ * the files of an attached folder keep their layout at the top of the project.
+ * Returns the paths they will have inside the project.
+ */
+export const stageAttachments = (taskId: string, attachments: Attachment[], asProjectFiles: boolean) => {
+  const dir = stagingDir(taskId);
+  const kept: string[] = [];
+  let total = 0;
+
+  // An attached folder arrives as "folder/…": its contents become the project, without that outer folder
+  const tops = new Set(attachments.map(a => String(a.path || '').replace(/\\/g, '/').replace(/^\/+/, '').split('/')[0]));
+  const stripTop = asProjectFiles && tops.size === 1 && attachments.every(a => String(a.path || '').includes('/'));
+
+  for (const attachment of attachments.slice(0, ATTACHMENT_LIMITS.files)) {
+    const whole = String(attachment.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const clean = stripTop ? whole.split('/').slice(1).join('/') : whole;
+    if (!clean || SKIPPED_ON_IMPORT.test(clean)) continue;
+    const target = asProjectFiles ? clean : `inputs/${clean.split('/').pop()}`;
+    const full = resolveInside(dir, target);
+    if (!full) continue;
+
+    const data = Buffer.from(String(attachment.data || ''), 'base64');
+    total += data.length;
+    if (total > ATTACHMENT_LIMITS.totalBytes) throw new Error(`Attachments are limited to ${ATTACHMENT_LIMITS.totalBytes / 1_000_000} MB in total.`);
+
+    fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(full), { recursive: true });
+    fs.writeFileSync(/* turbopackIgnore: true */ full, data);
+    kept.push(path.relative(dir, full));
+  }
+  return kept;
+};
+
+/** Moves a task's waiting attachments into its project. Returns the paths that were added. */
+export const installAttachments = (taskId: string, project: string) => {
+  const dir = stagingDir(taskId);
+  if (!fs.existsSync(/* turbopackIgnore: true */ dir)) return [];
+  const added: string[] = [];
+  const walk = (current: string) => {
+    for (const entry of fs.readdirSync(/* turbopackIgnore: true */ current, { withFileTypes: true })) {
+      const full = path.join(/* turbopackIgnore: true */ current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) added.push(writeProjectBytes(project, path.relative(dir, full), fs.readFileSync(/* turbopackIgnore: true */ full)));
+    }
+  };
+  walk(dir);
+  fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
+  return added;
+};
+
+export const discardAttachments = (taskId: string) => {
+  fs.rmSync(/* turbopackIgnore: true */ stagingDir(taskId), { recursive: true, force: true });
+};
+
+/** The attached pictures in a form a model can look at (a few, and not huge ones). */
+export const attachedImages = (project: string, attachments: string[] = []) => {
+  const images: { mediaType: string; data: string }[] = [];
+  for (const file of attachments) {
+    const mediaType = IMAGE_TYPES[path.extname(file).toLowerCase()];
+    if (!mediaType || images.length >= MAX_IMAGES_FOR_MODEL) continue;
+    const data = readProjectFile(project, file)?.data;
+    if (data && data.length <= MAX_IMAGE_BYTES) images.push({ mediaType, data: data.toString('base64') });
+  }
+  return images;
 };
 
 /** Largest file the file browser shows as text. */

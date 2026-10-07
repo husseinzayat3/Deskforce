@@ -1,12 +1,18 @@
 // Desktop shell: starts the bundled Next.js server (which runs the office engine)
 // on a private local port and shows it in a window.
-const { app, BrowserWindow, dialog, ipcMain, shell, utilityProcess } = require('electron');
+const { app, BrowserWindow, Notification, dialog, ipcMain, shell, utilityProcess } = require('electron');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const path = require('path');
 
 const SERVER_START_TIMEOUT_MS = 30_000;
+/** How often the shell asks the office whether something worth a notification happened. */
+const EVENT_POLL_MS = 5_000;
+/** How often a signed, published app looks for a newer version. */
+const UPDATE_CHECK_MS = 6 * 60 * 60_000;
+/** Kinds of office events shown as system notifications. */
+const NOTABLE = new Set(['report', 'question', 'failed', 'limit']);
 
 // Packaged: the server ships in the app's resources. Unpackaged: use the local build.
 const SERVER_DIR = app.isPackaged
@@ -118,6 +124,73 @@ const createWindow = () => {
   mainWindow.loadURL(serverUrl);
 };
 
+const getJson = url =>
+  new Promise((resolve, reject) => {
+    const req = http.get(url, res => {
+      let body = '';
+      res.on('data', chunk => (body += chunk));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(4000, () => req.destroy(new Error('timeout')));
+  });
+
+/**
+ * System notifications for what the office reports (a report is ready, an employee has a
+ * question, a task failed), shown while the window is closed or in the background.
+ */
+const watchEvents = () => {
+  let lastEvent = null;
+  setInterval(async () => {
+    if (!serverUrl || quitting) return;
+    try {
+      const data = await getJson(`${serverUrl}/api/office?events=1${lastEvent === null ? '' : `&afterEvent=${lastEvent}`}`);
+      const watching = mainWindow && mainWindow.isFocused();
+      if (lastEvent !== null && !watching && Notification.isSupported()) {
+        for (const event of data.events || []) {
+          if (!NOTABLE.has(event.kind)) continue;
+          const notification = new Notification({ title: 'My Office', body: event.message });
+          notification.on('click', () => {
+            if (mainWindow) {
+              if (mainWindow.isMinimized()) mainWindow.restore();
+              mainWindow.show();
+              mainWindow.focus();
+            } else {
+              createWindow();
+            }
+          });
+          notification.show();
+        }
+      }
+      if (typeof data.lastEventId === 'number') lastEvent = data.lastEventId;
+    } catch {
+      // the server is busy or restarting: try again on the next round
+    }
+  }, EVENT_POLL_MS);
+};
+
+/**
+ * Updates itself when the build was given somewhere to look (see scripts/build-desktop.sh).
+ * A new version is downloaded in the background and installed when the app is next quit.
+ */
+const watchForUpdates = () => {
+  if (!app.isPackaged || !fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'))) return;
+  try {
+    const { autoUpdater } = require('electron-updater');
+    const check = () => autoUpdater.checkForUpdatesAndNotify().catch(() => undefined);
+    check();
+    setInterval(check, UPDATE_CHECK_MS);
+  } catch {
+    // an update check must never stop the office from starting
+  }
+};
+
 // "Open folder" on a project: only folders directly inside the projects folder
 ipcMain.handle('open-project', async (_event, project) => {
   if (typeof project !== 'string' || !/^[a-z0-9][a-z0-9-]{0,60}$/.test(project)) return;
@@ -139,6 +212,8 @@ if (!app.requestSingleInstanceLock()) {
     try {
       await startServer();
       createWindow();
+      watchEvents();
+      watchForUpdates();
     } catch (e) {
       dialog.showErrorBox('My Office could not start', `${e.message}\nDetails: ${path.join(DATA_DIR, 'server.log')}`);
       app.quit();

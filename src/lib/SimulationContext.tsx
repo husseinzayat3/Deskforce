@@ -1,7 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Agent, AgentState, Role, Template } from './types';
+import { Agent, AgentState, Attachment, EventKind, OfficeFile, Role, Template } from './types';
 
 type NewAgent = Pick<Agent, 'name' | 'role' | 'api' | 'avatar' | 'model'>;
 
@@ -11,6 +11,31 @@ export interface MonthStatus {
   spent: number;
   reached: boolean;
 }
+
+export interface AssignOptions {
+  /** Spending limit in USD. */
+  budget?: number;
+  /** Continue an existing project instead of starting a new one. */
+  project?: string;
+  attachments?: Attachment[];
+  /** The attachments are a folder whose files become the project. */
+  attachedFolder?: boolean;
+}
+
+/** Events worth a notification outside the page. */
+const NOTABLE: EventKind[] = ['report', 'question', 'failed', 'limit'];
+
+/** Shows a system notification when the user is not looking at the office. */
+const notifyOutside = (message: string) => {
+  // The desktop app shows its own, also when the window is closed
+  if (typeof window === 'undefined' || window.desktop || typeof Notification === 'undefined') return;
+  if (Notification.permission !== 'granted' || document.hasFocus()) return;
+  try {
+    new Notification('My Office', { body: message, icon: '/avatars/robot.png' });
+  } catch {
+    // some browsers only allow notifications from a service worker
+  }
+};
 
 export type TemplateDraft = Omit<Template, 'id' | 'nextRunAt' | 'lastRunAt'> & { id?: string };
 
@@ -39,7 +64,15 @@ interface SimulationContextType {
   addAgent: (agent: NewAgent) => void;
   removeAgent: (agentId: string) => void;
   /** `budget`: spending limit in USD. `project`: continue an existing project instead of starting a new one. */
-  assignTask: (agentId: string, prompt: string, options?: { budget?: number; project?: string }) => void;
+  assignTask: (agentId: string, prompt: string, options?: AssignOptions) => void;
+  /** Change an employee in place; their tasks and history stay. */
+  editAgent: (agentId: string, changes: Partial<NewAgent>) => void;
+  /** Hide a finished task from the board, or show it again. */
+  archiveTask: (taskId: string, archived: boolean) => void;
+  /** Delete a finished task and its sub-tasks for good, optionally with the project's files. */
+  deleteTask: (taskId: string, withProject: boolean) => void;
+  /** Add the roles, employees and templates of an office file to this office. */
+  importOffice: (office: OfficeFile) => void;
   /** Queue a failed or cancelled task again. */
   retryTask: (taskId: string) => void;
   /** Send a finished task back with feedback. */
@@ -253,7 +286,10 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         if (!res.ok || data.error) throw new Error(data.error || `Office request failed (${res.status})`);
 
         apply(seq, data);
-        (data.events || []).forEach((event: { message: string }) => notify(event.message));
+        (data.events || []).forEach((event: { message: string; kind?: EventKind }) => {
+          notify(event.message);
+          if (event.kind && NOTABLE.includes(event.kind)) notifyOutside(event.message);
+        });
         if (typeof data.lastEventId === 'number') lastEventRef.current = data.lastEventId;
       } catch (e) {
         console.error('Failed to load the office', e);
@@ -286,7 +322,11 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const addAgent = useCallback((agent: NewAgent) => { send({ action: 'hire', ...agent }); }, [send]);
   const removeAgent = useCallback((agentId: string) => { send({ action: 'remove', agentId }); }, [send]);
-  const assignTask = useCallback((agentId: string, prompt: string, options?: { budget?: number; project?: string }) => { send({ action: 'assign', agentId, prompt, ...options }); }, [send]);
+  const assignTask = useCallback((agentId: string, prompt: string, options?: AssignOptions) => { send({ action: 'assign', agentId, prompt, ...options }); }, [send]);
+  const editAgent = useCallback((agentId: string, changes: Partial<NewAgent>) => { send({ action: 'editAgent', agentId, ...changes }); }, [send]);
+  const archiveTask = useCallback((taskId: string, archived: boolean) => { send({ action: 'archive', taskId, archived }); }, [send]);
+  const deleteTask = useCallback((taskId: string, withProject: boolean) => { send({ action: 'deleteTask', taskId, withProject }); }, [send]);
+  const importOffice = useCallback((office: OfficeFile) => { send({ action: 'import', office }); }, [send]);
   const retryTask = useCallback((taskId: string) => { send({ action: 'retry', taskId }); }, [send]);
   const reviseTask = useCallback((taskId: string, note: string) => { send({ action: 'revise', taskId, note }); }, [send]);
   const cancelTask = useCallback((taskId: string) => { send({ action: 'cancel', taskId }); }, [send]);
@@ -326,7 +366,7 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }), [serverAgents, visuals]);
 
   return (
-    <SimulationContext.Provider value={{ agents, paused, projectsDir, live, roles, templates, month, notifications, notify, focus, focusAgent, addAgent, removeAgent, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused, answerTask, saveRole, removeRole, saveTemplate, removeTemplate, runTemplate, setMonthlyCap }}>
+    <SimulationContext.Provider value={{ agents, paused, projectsDir, live, roles, templates, month, notifications, notify, focus, focusAgent, addAgent, removeAgent, editAgent, archiveTask, deleteTask, importOffice, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused, answerTask, saveRole, removeRole, saveTemplate, removeTemplate, runTemplate, setMonthlyCap }}>
       {children}
     </SimulationContext.Provider>
   );

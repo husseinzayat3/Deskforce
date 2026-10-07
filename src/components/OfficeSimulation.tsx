@@ -1,21 +1,36 @@
 "use client";
 
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useSimulation } from '../lib/SimulationContext';
 import { motion } from 'framer-motion';
 import { taskTitle } from '../lib/officeConfig';
 
+/** Side of the floorplan image in pixels; employee positions are in these units. */
+const MAP_SIZE = 1024;
+
 export default function OfficeSimulation() {
   const { agents, live, focus, focusAgent } = useSimulation();
 
+  // The floorplan is drawn at a fixed size and scaled to whatever room the page gives it
+  const frame = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  useEffect(() => {
+    const element = frame.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => setScale(Math.min(entry.contentRect.width, entry.contentRect.height) / MAP_SIZE));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   return (
+    <div ref={frame} style={{ width: '100%', height: '100%', overflow: 'hidden' }}>
     <div style={{ 
       position: 'relative', 
-      width: '1024px', 
-      height: '1024px', 
-      borderRadius: '16px', 
-      overflow: 'hidden', 
-      boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+      width: `${MAP_SIZE}px`, 
+      height: `${MAP_SIZE}px`, 
+      transform: `scale(${scale})`,
+      transformOrigin: 'top left',
       backgroundColor: '#e2e8f0'
     }}>
       <img src="/office_bg.png" alt="Office Floorplan" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -174,6 +189,7 @@ export default function OfficeSimulation() {
           </motion.div>
         );
       })}
+    </div>
     </div>
   );
 }

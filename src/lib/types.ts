@@ -95,6 +95,36 @@ export interface TaskItem {
   participants?: string[];
   /** Task that has to finish before this one may start. */
   blockedBy?: string;
+  /** Hidden from the task board. Only set on tasks assigned by the user. */
+  archived?: boolean;
+  /** Files the user gave with the task, as paths inside the project. */
+  attachments?: string[];
+  /** How many times the project's checks ran for this task. Only on tasks assigned by the user. */
+  checkRuns?: number;
+  checkPassed?: boolean;
+  /** What the checks printed the last time they ran. */
+  checkOutput?: string;
+}
+
+/** What a notification is about, so the important ones can be shown outside the page. */
+export type EventKind = 'info' | 'report' | 'question' | 'failed' | 'limit';
+
+/** A file given with a task. `path` may contain folders when a whole folder was attached. */
+export interface Attachment {
+  path: string;
+  /** Base64 of the file's bytes. */
+  data: string;
+}
+
+/** An office without its history or secrets: what "export" writes and "import" reads. */
+export interface OfficeFile {
+  format: 'my-office';
+  version: 1;
+  exportedAt: string;
+  roles: Role[];
+  employees: { name: string; role: string; api: APIProvider; model?: string; avatar: string }[];
+  /** `employee` is the name of the employee the template belongs to. */
+  templates: (Omit<Template, 'id' | 'agentId' | 'nextRunAt' | 'lastRunAt' | 'project'> & { employee?: string })[];
 }
 
 export interface Agent {

@@ -2,21 +2,31 @@
 
 import React, { useState } from 'react';
 import { useSimulation } from '../lib/SimulationContext';
-import { AgentRole, APIProvider, Agent, TaskItem } from '../lib/types';
-import { UserPlus, Briefcase, Zap, CheckCircle2, ChevronRight, MessageSquare, Terminal, Trash2, Pause, Play, SquareX, ListTree, Settings, Users, Wallet, BookmarkCheck } from 'lucide-react';
+import { AgentRole, APIProvider, Agent, Attachment, TaskItem } from '../lib/types';
+import { UserPlus, Briefcase, Zap, CheckCircle2, ChevronRight, ChevronDown, MessageSquare, Terminal, Trash2, Pause, Play, SquareX, ListTree, Settings, Users, Wallet, BookmarkCheck, Pencil, Paperclip, FolderUp, X } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import TaskTree from './TaskTree';
 import SettingsPanel from './SettingsPanel';
 import RolesPanel from './RolesPanel';
 import CostsPanel from './CostsPanel';
 import TemplatesPanel from './TemplatesPanel';
+import EmployeeEditor from './EmployeeEditor';
+import { readAttachments } from '../lib/attachments';
 import { OFFICE_CONFIG, MODEL_SUGGESTIONS, cleanPrompt, formatUsage, projectOf, taskTitle } from '../lib/officeConfig';
 import { TemplateDraft } from '../lib/SimulationContext';
+
+/** How an employee's state reads in the team list. */
+const STATE_LABEL: Record<string, string> = {
+  IDLE: 'Idle', WORKING: 'Working', BREAK: 'On a break', COFFEE: 'Getting coffee', TOILET: 'Away', WAITING_FOR_HELP: 'Has a question', MEETING: 'In a meeting',
+};
+
+/** 18798 → "18.8k" */
+const compactTokens = (tokens: number) => (tokens >= 1_000_000 ? `${(tokens / 1_000_000).toFixed(1)}M` : tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens));
 
 export default function Dashboard() {
   const {
     agents, paused, projectsDir, live, roles, templates, month, notifications, notify, focus,
-    addAgent, removeAgent, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused,
+    addAgent, removeAgent, editAgent, archiveTask, deleteTask, importOffice, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused,
     answerTask, saveRole, removeRole, saveTemplate, removeTemplate, runTemplate, setMonthlyCap,
   } = useSimulation();
 
@@ -26,6 +36,27 @@ export default function Dashboard() {
   // Empty = the provider's default model from the settings
   const [model, setModel] = useState('');
   const [rolesOpen, setRolesOpen] = useState(false);
+  // The hiring form stays out of the way once the office has people; null = not chosen by hand yet
+  const [hireOpen, setHireOpen] = useState<boolean | null>(null);
+  const showHire = hireOpen ?? agents.length === 0;
+  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  // Files picked for the task being assigned
+  const [attached, setAttached] = useState<{ files: Attachment[]; folder: boolean } | null>(null);
+  const fileInput = React.useRef<HTMLInputElement>(null);
+  const folderInput = React.useRef<HTMLInputElement>(null);
+
+  const pickFiles = async (event: React.ChangeEvent<HTMLInputElement>, folder: boolean) => {
+    const picked = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (picked.length === 0) return;
+    try {
+      const files = await readAttachments(picked);
+      if (files.length === 0) return notify('Nothing to attach: the folder only holds files that are skipped (such as node_modules).');
+      setAttached({ files, folder });
+    } catch (e: any) {
+      notify(e.message);
+    }
+  };
   // A template being created from a task on the board
   const [templateDraft, setTemplateDraft] = useState<TemplateDraft | null>(null);
   const [avatar, setAvatar] = useState('/avatars/robot.png');
@@ -68,7 +99,11 @@ export default function Dashboard() {
     setActiveTaskAgent(null);
     setTaskPrompt('');
     setTaskBudget('');
-    assignTask(agent.id, prompt, { budget: Number(taskBudget) > 0 ? Number(taskBudget) : undefined });
+    setAttached(null);
+    assignTask(agent.id, prompt, {
+      budget: Number(taskBudget) > 0 ? Number(taskBudget) : undefined,
+      ...(attached ? { attachments: attached.files, attachedFolder: attached.folder } : {}),
+    });
     notify(`Task queued for ${agent.name}`);
   };
 
@@ -100,56 +135,47 @@ return (
       ))}
     </div>
 
-    {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} onSaved={notify} />}
+    {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} onSaved={notify} onImport={importOffice} />}
+    {editingAgent && <EmployeeEditor agent={editingAgent} roles={roles} onSave={changes => editAgent(editingAgent.id, changes)} onClose={() => setEditingAgent(null)} />}
+    <input ref={fileInput} type="file" multiple hidden onChange={e => pickFiles(e, false)} />
+    {/* webkitdirectory lets a whole folder be picked; React has no typed prop for it */}
+    <input ref={folderInput} type="file" multiple hidden onChange={e => pickFiles(e, true)} {...({ webkitdirectory: '' } as object)} />
     {rolesOpen && <RolesPanel roles={roles} agents={agents} onSave={saveRole} onRemove={removeRole} onClose={() => setRolesOpen(false)} />}
 
     <div className={styles.header}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <div className={styles.iconBox}><Terminal size={20} color="#38bdf8" /></div>
-        <h2 className={styles.title}>AI Office Manager</h2>
+      <div className={styles.brand}>
+        <div className={styles.iconBox}><Terminal size={18} color="#38bdf8" /></div>
+        <h2 className={styles.title}>AI Office</h2>
       </div>
-      <div style={{ display: 'flex', gap: '8px' }}>
-        <button 
-          onClick={() => setPaused(!paused)} 
-          className={styles.button} 
-          style={{ background: paused ? '#10b981' : '#f59e0b', padding: '6px 12px', fontSize: '12px' }}
-        >
-          {paused ? <Play size={14} /> : <Pause size={14} />} 
-          {paused ? 'Resume Tasks' : 'Pause Tasks'}
-        </button>
-        <button 
-          onClick={haltAll} 
-          className={styles.button} 
-          style={{ background: '#ef4444', padding: '6px 12px', fontSize: '12px' }}
-        >
-          <SquareX size={14} /> Halt Simulation
-        </button>
+      <div className={styles.headerActions}>
         <button
-          onClick={() => setRolesOpen(true)}
-          className={styles.button}
-          style={{ background: '#475569', padding: '6px 10px', fontSize: '12px' }}
-          title="Roles and their instructions"
-          aria-label="Roles and their instructions"
+          onClick={() => setPaused(!paused)}
+          className={styles.headerButton}
+          style={{ background: paused ? '#10b981' : '#f59e0b' }}
+          title={paused ? 'Let employees pick up tasks again' : 'Stop employees from starting new tasks'}
         >
+          {paused ? <Play size={14} /> : <Pause size={14} />}
+          {paused ? 'Resume' : 'Pause'}
+        </button>
+        <button onClick={haltAll} className={styles.headerButton} style={{ background: '#ef4444' }} title="Cancel every task that has not finished">
+          <SquareX size={14} /> Halt
+        </button>
+        <button onClick={() => setRolesOpen(true)} className={styles.headerButton} style={{ background: '#475569' }} title="Roles and their instructions" aria-label="Roles and their instructions">
           <Users size={14} />
         </button>
-        <button
-          onClick={() => setSettingsOpen(true)}
-          className={styles.button}
-          style={{ background: '#475569', padding: '6px 10px', fontSize: '12px' }}
-          title="AI provider settings"
-          aria-label="AI provider settings"
-        >
+        <button onClick={() => setSettingsOpen(true)} className={styles.headerButton} style={{ background: '#475569' }} title="Settings" aria-label="Settings">
           <Settings size={14} />
         </button>
       </div>
     </div>
 
-    <div className={styles.card}>
-      <div className={styles.cardHeader}>
+    <div className={`${styles.card} ${styles.hireCard}`}>
+      <button type="button" className={styles.cardToggle} onClick={() => setHireOpen(!showHire)} aria-expanded={showHire}>
         <UserPlus size={16} />
-        <h3>Hire New Employee</h3>
-      </div>
+        <h3>Hire new employee</h3>
+        {showHire ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+      </button>
+      {showHire && (
       <form onSubmit={handleAddEmployee} className={styles.form}>
         <input
           type="text"
@@ -200,10 +226,11 @@ return (
           Hire Employee
         </button>
       </form>
+      )}
     </div>
 
-    <div className={styles.card} style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div className={styles.tabs} role="tablist" style={{ flexWrap: 'wrap' }}>
+    <div className={`${styles.card} ${styles.panelCard}`}>
+      <div className={styles.tabs} role="tablist">
         <button
           id="tab-roster"
           role="tab"
@@ -211,7 +238,7 @@ return (
           className={`${styles.tab} ${panelView === 'roster' ? styles.tabActive : ''}`}
           onClick={() => setPanelView('roster')}
         >
-          <Briefcase size={14} /> Employees ({agents.length})
+          <Briefcase size={14} /> Team ({agents.length})
         </button>
         <button
           id="tab-tasks"
@@ -220,7 +247,7 @@ return (
           className={`${styles.tab} ${panelView === 'tasks' ? styles.tabActive : ''}`}
           onClick={() => setPanelView('tasks')}
         >
-          <ListTree size={14} /> Task Board
+          <ListTree size={14} /> Tasks
           {activeTaskCount > 0 && <span className={styles.tabCount}>{activeTaskCount}</span>}
           {questionCount > 0 && <span className={styles.tabCount} style={{ background: '#f59e0b' }} title="Questions waiting for your answer">?{questionCount}</span>}
         </button>
@@ -262,6 +289,8 @@ return (
             live={live}
             notify={notify}
             onAnswer={answerTask}
+            onArchive={archiveTask}
+            onDelete={deleteTask}
             onSaveTemplate={startTemplateFrom}
             onRetry={retryTask}
             onRevise={reviseTask}
@@ -278,22 +307,24 @@ return (
             onClick={() => setExpandedAgentId(expandedAgentId === agent.id ? null : agent.id)}
           >
             <div className={styles.agentMain}>
-              <div className={styles.agentAvatar} style={{ padding: 0, overflow: 'hidden', backgroundColor: 'transparent' }}>
+              <div className={styles.agentAvatar}>
                 <img src={agent.avatar || '/avatars/robot.png'} alt={agent.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </div>
               <div className={styles.agentInfo}>
                 <div className={styles.agentName}>
-                  {agent.name}
+                  <span className={styles.agentNameText} title={agent.name}>{agent.name}</span>
                   <span className={styles.badge}>{agent.role}</span>
                 </div>
-                <div className={styles.agentDetails}>
-                  <Zap size={12} style={{ marginRight: 4 }} />{agent.api}{agent.model ? ` · ${agent.model}` : ''}
+                <div className={styles.agentDetails} title={`${agent.api}${agent.model ? ` · ${agent.model}` : ''} · ${agent.tokensUsed.toLocaleString('en-US')} tokens used`}>
+                  <span className={styles.statusText} data-status={agent.state}>{STATE_LABEL[agent.state] || agent.state}</span>
                   <span className={styles.dot}>•</span>
-                  <span className={styles.statusText} data-status={agent.state}>{agent.state}</span>
+                  <Zap size={11} style={{ marginRight: 3, flexShrink: 0 }} />
+                  <span className={styles.agentModel}>{agent.model || agent.api}</span>
+                  <span className={styles.dot}>•</span>
+                  <span style={{ flexShrink: 0 }}>{compactTokens(agent.tokensUsed)} tokens</span>
                 </div>
               </div>
               <div className={styles.agentActions}>
-                <div className={styles.tokenCounter}>{agent.tokensUsed} tkns</div>
                 {agent.state !== 'WORKING' && activeTaskAgent !== agent.id && (
                   <button
                     className={styles.actionButton}
@@ -305,8 +336,15 @@ return (
                 )}
                 <button
                   className={styles.actionButton}
+                  onClick={(e) => { e.stopPropagation(); setEditingAgent(agent); }}
+                  title="Edit employee"
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  className={styles.actionButton}
                   style={{ color: '#ef4444' }}
-                  onClick={(e) => { e.stopPropagation(); removeAgent(agent.id); }}
+                  onClick={(e) => { e.stopPropagation(); if (window.confirm(`Remove ${agent.name}? Their tasks and history are deleted with them. To change their role or model instead, use Edit.`)) removeAgent(agent.id); }}
                   title="Remove Employee"
                 >
                   <Trash2 size={14} />
@@ -346,9 +384,26 @@ return (
                   className={styles.taskInput}
                   style={{ flex: '0 0 72px', width: '72px' }}
                 />
+                <button type="button" className={styles.actionButton} onClick={() => fileInput.current?.click()} title="Attach files or images for this task" aria-label="Attach files">
+                  <Paperclip size={14} />
+                </button>
+                <button type="button" className={styles.actionButton} onClick={() => folderInput.current?.click()} title="Start from an existing folder: its files become the project" aria-label="Attach a folder">
+                  <FolderUp size={14} />
+                </button>
                 <button className={styles.sendButton} onClick={() => handleManualAssignment(agent, taskPrompt)}>
                   <ChevronRight size={16} />
                 </button>
+              </div>
+            )}
+            {activeTaskAgent === agent.id && attached && (
+              <div onClick={e => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#475569', padding: '4px 12px 8px' }}>
+                <Paperclip size={12} />
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {attached.folder
+                    ? `Folder with ${attached.files.length} file${attached.files.length === 1 ? '' : 's'}: they become the project`
+                    : attached.files.map(f => f.path).join(', ')}
+                </span>
+                <button type="button" className={styles.actionButton} onClick={() => setAttached(null)} aria-label="Remove attachments"><X size={12} /></button>
               </div>
             )}
 

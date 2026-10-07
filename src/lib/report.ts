@@ -25,14 +25,14 @@ const inOrder = (root: TaskRef, tree: TaskRef[]) => {
   return ordered;
 };
 
-const titleOf = (ref: TaskRef) => (ref.task.kind === 'REVIEW' ? 'Final review' : taskTitle(ref.task));
+const titleOf = (ref: TaskRef) => (ref.task.kind === 'REVIEW' && !ref.task.title ? 'Final review' : taskTitle(ref.task));
 
 /** Markdown report for a finished task tree: the outcome, who did what, what it cost, and the files delivered. */
 export const buildReport = (root: TaskRef, tree: TaskRef[], folder = `workspace/projects/${projectOf(root.task)}`) => {
   const ordered = inOrder(root, tree);
   const total = sumUsage(tree.map(ref => ref.task));
   // The latest one, in case the work was reviewed again after a revision
-  const review = tree.filter(ref => ref.task.kind === 'REVIEW' && ref.task.status === 'COMPLETED').sort((a, b) => b.task.timestamp - a.task.timestamp)[0];
+  const review = tree.filter(ref => ref.task.kind === 'REVIEW' && !ref.task.title && ref.task.status === 'COMPLETED').sort((a, b) => b.task.timestamp - a.task.timestamp)[0];
   const outcomeSource = review || root;
   const outcome = outcomeSource.task.summary || stripTags(outcomeSource.task.response || '') || 'No summary was provided.';
   const files = Array.from(new Set(tree.flatMap(ref => ref.task.files || []))).sort();
@@ -75,6 +75,10 @@ export const buildReport = (root: TaskRef, tree: TaskRef[], folder = `workspace/
 
   lines.push('', '## Files delivered', '');
   lines.push(...(files.length > 0 ? files.map(f => `- ${f}`) : ['No files were saved.']));
+
+  if (root.task.checkOutput) {
+    lines.push('', '## Checks', '', '```', root.task.checkOutput.trim(), '```');
+  }
 
   if (problems.length > 0) {
     lines.push('', '## Problems', '');

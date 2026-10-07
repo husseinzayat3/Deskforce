@@ -2,8 +2,12 @@
   "name": "my-office-desktop",
   "productName": "My Office",
   "version": "0.1.0",
-  "description": "My Office — AI agent simulation",
+  "description": "My Office \u2014 AI agent simulation",
   "author": "Hussein Zayat <husseinzayat10@hotmail.com>",
   "private": true,
-  "main": "main.js"
+  "main": "main.js",
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "repository": "github:husseinzayat3/MyOffice"
 }

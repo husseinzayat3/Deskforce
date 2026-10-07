@@ -6,7 +6,7 @@ import { getSetting } from './settings';
 
 const DEFAULT_MAX_TOKENS = 4000;
 /** Upper bound on a single model call, whatever the caller asks for. */
-const MAX_TOKENS_LIMIT = 8000;
+const MAX_TOKENS_LIMIT = 16000;
 /**
  * Models that think before answering spend those tokens out of the same allowance,
  * so they get more room than the visible answer needs.
@@ -20,6 +20,9 @@ const CONTINUE_PROMPT = 'Your previous message was cut off by the length limit. 
 /** A call is given up when the provider sends nothing at all for this long. */
 const IDLE_TIMEOUT_MS = 5 * 60_000;
 
+/** How many times a Claude turn paused by its own web tools is resumed. */
+const MAX_PAUSE_RESUMES = 4;
+
 /** Ollama's default context window is small enough to silently cut off the project context. */
 const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX) || 8192;
 
@@ -29,17 +32,49 @@ const GEMINI_BASE_URL = (process.env.GEMINI_BASE_URL || 'https://generativelangu
 const ANTHROPIC_FALLBACK_MODELS = new Set(['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5']);
 const ANTHROPIC_FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
+/** Claude models whose web tools filter results themselves; older models use the basic versions. */
+const ANTHROPIC_FILTERING_WEB = /^claude-(fable-5|opus-5|sonnet-5|opus-4-[678]|sonnet-4-6)/;
+
 export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
-interface Completion {
-  text: string;
-  inputTokens: number;
-  outputTokens: number;
-  /** The model stopped because it ran out of room, not because it was done. */
-  truncated: boolean;
-  /** Model that actually answered, when the provider reports one different from the request. */
-  model?: string;
+/** A function the model may call. `parameters` is a JSON Schema object. */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
 }
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  /** Set when the model's arguments could not be read; the call is answered with this error. */
+  invalid?: string;
+}
+
+export interface ToolResult {
+  id: string;
+  name: string;
+  output: string;
+  isError?: boolean;
+}
+
+export interface ImagePart {
+  /** For example "image/png". */
+  mediaType: string;
+  /** Base64 of the image bytes. */
+  data: string;
+}
+
+/**
+ * One turn of a conversation, in a form every provider can be given.
+ * An assistant turn's `raw` is the provider's own form of it; it is sent back as-is so the
+ * model's thinking and tool calls stay intact.
+ */
+export type Turn =
+  | { role: 'user'; text: string; images?: ImagePart[] }
+  | { role: 'assistant'; text: string; toolCalls?: ToolCall[]; raw?: unknown }
+  | { role: 'tool'; results: ToolResult[] };
 
 type OnText = (delta: string) => void;
 
@@ -51,37 +86,38 @@ interface CallIO {
   signal: AbortSignal;
 }
 
-type ModelCall = (messages: ChatMessage[], io: CallIO) => Promise<Completion>;
-
-export interface ModelRequest {
-  provider: APIProvider;
-  /** Model to use. Empty = the provider's default from the settings. */
-  model?: string;
-  prompt: string;
-  systemPrompt?: string;
-  /** Earlier turns of the same conversation, placed before `prompt`. */
-  history?: ChatMessage[];
-  maxTokens?: number;
-  /** Called with each piece of the answer as it is written. */
-  onText?: OnText;
-  /** Stops the call, for example when the user halts the office. */
-  signal?: AbortSignal;
+interface StepInput {
+  system: string;
+  turns: Turn[];
+  tools: ToolSpec[];
+  maxTokens: number;
+  /** Let the model use the provider's own web search (Claude only). */
+  nativeWeb: boolean;
 }
 
-export interface ModelResult {
-  response: string;
-  /** Input + output tokens. */
-  tokens: number;
+interface StepOutput {
+  text: string;
+  toolCalls: ToolCall[];
+  raw?: unknown;
   inputTokens: number;
   outputTokens: number;
-  model: string;
-  /** Estimated USD; undefined when the model has no known price. */
-  cost: number | undefined;
+  /** The model stopped because it ran out of room, not because it was done. */
   truncated: boolean;
+  /** Model that actually answered, when the provider reports one different from the request. */
+  model?: string;
 }
+
+type Adapter = (input: StepInput, io: CallIO) => Promise<StepOutput>;
+
+/** The model cannot call functions; the caller should fall back to the tag format. */
+export class ToolsUnsupportedError extends Error {}
 
 /** Rough token count for providers that do not report usage on a stream. */
 const estimateTokens = (text: string) => Math.ceil(text.length / 4);
+
+const textOf = (turns: Turn[]) => turns.map(t => ('text' in t ? t.text : t.results.map(r => r.output).join('\n'))).join('\n');
+
+const newCallId = () => `call_${Math.random().toString(36).slice(2, 12)}`;
 
 /** Yields the lines of a streamed HTTP response. */
 async function* readLines(res: Response) {
@@ -100,57 +136,142 @@ async function* readLines(res: Response) {
   if (buffer) yield buffer;
 }
 
-const openAiCompatible = (client: OpenAI, model: string, maxTokens: number): ModelCall => async (messages, { onText, beat, signal }) => {
+// --- OpenAI and compatible (Grok) ------------------------------------------------
+
+const openAiCompatible = (client: OpenAI, model: string, tokenParam: 'max_tokens' | 'max_completion_tokens'): Adapter => async ({ system, turns, tools, maxTokens }, { onText, beat, signal }) => {
+  const messages: any[] = [];
+  if (system) messages.push({ role: 'system', content: system });
+  for (const turn of turns) {
+    if (turn.role === 'user') {
+      messages.push({
+        role: 'user',
+        content: turn.images?.length
+          ? [{ type: 'text', text: turn.text }, ...turn.images.map(image => ({ type: 'image_url', image_url: { url: `data:${image.mediaType};base64,${image.data}` } }))]
+          : turn.text,
+      });
+    } else if (turn.role === 'assistant') {
+      messages.push({
+        role: 'assistant',
+        content: turn.text || null,
+        ...(turn.toolCalls?.length
+          ? { tool_calls: turn.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input) } })) }
+          : {}),
+      });
+    } else {
+      for (const result of turn.results) messages.push({ role: 'tool', tool_call_id: result.id, content: result.output });
+    }
+  }
+
   const stream = await client.chat.completions.create({
     messages,
     model,
-    max_tokens: maxTokens,
+    [tokenParam]: maxTokens,
     stream: true,
     stream_options: { include_usage: true },
-  }, { signal });
+    ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}),
+  } as any, { signal }) as unknown as AsyncIterable<any>;
 
   let text = '';
   let finishReason: string | null = null;
   let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+  // Tool calls arrive in pieces, keyed by their position
+  const pending = new Map<number, { id: string; name: string; args: string }>();
 
   for await (const chunk of stream) {
     beat();
-    const choice = chunk.choices[0];
+    const choice = chunk.choices?.[0];
     if (choice?.delta?.content) {
       text += choice.delta.content;
       onText(choice.delta.content);
+    }
+    for (const piece of choice?.delta?.tool_calls || []) {
+      const call = pending.get(piece.index) || { id: '', name: '', args: '' };
+      if (piece.id) call.id = piece.id;
+      if (piece.function?.name) call.name += piece.function.name;
+      if (piece.function?.arguments) call.args += piece.function.arguments;
+      pending.set(piece.index, call);
     }
     if (choice?.finish_reason) finishReason = choice.finish_reason;
     if (chunk.usage) usage = chunk.usage;
   }
 
+  const toolCalls: ToolCall[] = Array.from(pending.entries()).sort((a, b) => a[0] - b[0]).map(([, call]) => {
+    try {
+      return { id: call.id || newCallId(), name: call.name, input: call.args ? JSON.parse(call.args) : {} };
+    } catch {
+      return { id: call.id || newCallId(), name: call.name, input: {}, invalid: 'The arguments were not valid JSON.' };
+    }
+  });
+
   return {
     text,
-    inputTokens: usage?.prompt_tokens ?? estimateTokens(messages.map(m => m.content).join('\n')),
+    toolCalls,
+    inputTokens: usage?.prompt_tokens ?? estimateTokens(system + textOf(turns)),
     outputTokens: usage?.completion_tokens ?? estimateTokens(text),
     truncated: finishReason === 'length',
   };
 };
 
-const anthropic = (client: Anthropic, model: string, maxTokens: number): ModelCall => async (messages, { onText, beat, signal }) => {
-  const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
-  const conversation = messages
-    .filter((m): m is ChatMessage & { role: 'user' | 'assistant' } => m.role !== 'system')
-    .map(m => ({ role: m.role, content: m.content }));
+// --- Anthropic ------------------------------------------------------------------
 
-  const params = {
+const anthropic = (client: Anthropic, model: string): Adapter => async ({ system, turns, tools, maxTokens, nativeWeb }, { onText, beat, signal }) => {
+  const messages: any[] = [];
+  for (const turn of turns) {
+    if (turn.role === 'user') {
+      messages.push({
+        role: 'user',
+        content: turn.images?.length
+          ? [...turn.images.map(image => ({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } })), { type: 'text', text: turn.text }]
+          : turn.text,
+      });
+    } else if (turn.role === 'assistant') {
+      // The original blocks go back unchanged: they carry the model's thinking and its tool calls
+      messages.push({ role: 'assistant', content: turn.raw ?? turn.text });
+    } else {
+      messages.push({
+        role: 'user',
+        content: turn.results.map(result => ({ type: 'tool_result', tool_use_id: result.id, content: result.output, ...(result.isError ? { is_error: true } : {}) })),
+      });
+    }
+  }
+
+  const filtering = ANTHROPIC_FILTERING_WEB.test(model);
+  const allTools: any[] = tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters }));
+  if (nativeWeb) {
+    allTools.push(
+      { type: filtering ? 'web_search_20260209' : 'web_search_20250305', name: 'web_search', max_uses: 5 },
+      { type: filtering ? 'web_fetch_20260209' : 'web_fetch_20250910', name: 'web_fetch', max_uses: 5 },
+    );
+  }
+
+  const params: any = {
     model,
     max_tokens: Math.max(maxTokens, THINKING_HEADROOM_TOKENS),
     ...(system ? { system } : {}),
-    messages: conversation,
+    ...(allTools.length ? { tools: allTools } : {}),
+    messages,
   };
 
   try {
-    // Where the model supports it, a request it declines for policy reasons is retried
-    // by Anthropic on its default fallback model inside the same call.
-    const message = ANTHROPIC_FALLBACK_MODELS.has(model)
-      ? await client.beta.messages.stream({ ...params, betas: [ANTHROPIC_FALLBACK_BETA], fallbacks: 'default' }, { signal }).on('streamEvent', beat).on('text', onText).finalMessage()
-      : await client.messages.stream(params, { signal }).on('streamEvent', beat).on('text', onText).finalMessage();
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let message: any;
+
+    for (let round = 0; ; round++) {
+      // Where the model supports it, a request it declines for policy reasons is retried
+      // by Anthropic on its default fallback model inside the same call.
+      message = ANTHROPIC_FALLBACK_MODELS.has(model)
+        ? await client.beta.messages.stream({ ...params, betas: [ANTHROPIC_FALLBACK_BETA], fallbacks: 'default' }, { signal }).on('streamEvent', beat).on('text', onText).finalMessage()
+        : await client.messages.stream(params, { signal }).on('streamEvent', beat).on('text', onText).finalMessage();
+
+      const usage = message.usage;
+      inputTokens += usage.input_tokens + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+      outputTokens += usage.output_tokens;
+
+      // A long web search can pause the turn; sending it back lets the model carry on
+      if (message.stop_reason !== 'pause_turn' || round >= MAX_PAUSE_RESUMES) break;
+      params.messages = [...params.messages, { role: 'assistant', content: message.content }];
+    }
 
     if (message.stop_reason === 'refusal') {
       const category = message.stop_details?.category;
@@ -158,15 +279,18 @@ const anthropic = (client: Anthropic, model: string, maxTokens: number): ModelCa
     }
 
     let text = '';
+    const toolCalls: ToolCall[] = [];
     for (const block of message.content) {
       if (block.type === 'text') text += block.text;
+      if (block.type === 'tool_use') toolCalls.push({ id: block.id, name: block.name, input: (block.input as Record<string, unknown>) || {} });
     }
 
-    const usage = message.usage;
     return {
       text,
-      inputTokens: usage.input_tokens + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0),
-      outputTokens: usage.output_tokens,
+      toolCalls,
+      raw: message.content,
+      inputTokens,
+      outputTokens,
       truncated: message.stop_reason === 'max_tokens',
       model: message.model,
     };
@@ -180,17 +304,30 @@ const anthropic = (client: Anthropic, model: string, maxTokens: number): ModelCa
   }
 };
 
-const gemini = (apiKey: string, model: string, maxTokens: number): ModelCall => async (messages, { onText, beat, signal }) => {
-  const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
+// --- Gemini ---------------------------------------------------------------------
+
+const gemini = (apiKey: string, model: string, grounded = false): Adapter => async ({ system, turns, tools, maxTokens }, { onText, beat, signal }) => {
+  const contents = turns.map(turn => {
+    if (turn.role === 'user') {
+      return { role: 'user', parts: [{ text: turn.text }, ...(turn.images || []).map(image => ({ inlineData: { mimeType: image.mediaType, data: image.data } }))] };
+    }
+    if (turn.role === 'assistant') {
+      // The original parts go back unchanged: they carry the signatures Gemini needs to continue its reasoning
+      return { role: 'model', parts: (turn.raw as unknown[]) ?? [{ text: turn.text }] };
+    }
+    return { role: 'user', parts: turn.results.map(result => ({ functionResponse: { name: result.name, response: { [result.isError ? 'error' : 'output']: result.output } } })) };
+  });
+
   const res = await fetch(`${GEMINI_BASE_URL}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     signal,
     body: JSON.stringify({
       ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
-      contents: messages
-        .filter(m => m.role !== 'system')
-        .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+      contents,
+      ...(grounded
+        ? { tools: [{ google_search: {} }] }
+        : tools.length ? { tools: [{ functionDeclarations: tools.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) }] } : {}),
       generationConfig: { maxOutputTokens: Math.max(maxTokens, THINKING_HEADROOM_TOKENS) },
     }),
   });
@@ -202,6 +339,9 @@ const gemini = (apiKey: string, model: string, maxTokens: number): ModelCall => 
   let text = '';
   let finishReason = '';
   let usage: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } = {};
+  const parts: any[] = [];
+  const toolCalls: ToolCall[] = [];
+  const sources = new Set<string>();
 
   for await (const line of readLines(res)) {
     beat();
@@ -214,28 +354,56 @@ const gemini = (apiKey: string, model: string, maxTokens: number): ModelCall => 
     }
     const candidate = chunk.candidates?.[0];
     for (const part of candidate?.content?.parts || []) {
+      parts.push(part);
       if (typeof part.text === 'string' && !part.thought) {
         text += part.text;
         onText(part.text);
       }
+      if (part.functionCall) {
+        toolCalls.push({ id: part.functionCall.id || newCallId(), name: part.functionCall.name, input: part.functionCall.args || {} });
+      }
+    }
+    for (const source of candidate?.groundingMetadata?.groundingChunks || []) {
+      if (source.web?.uri) sources.add(`${source.web.title || 'source'}: ${source.web.uri}`);
     }
     if (candidate?.finishReason) finishReason = candidate.finishReason;
     if (chunk.usageMetadata) usage = chunk.usageMetadata;
   }
 
-  if (!text && finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
+  if (!text && toolCalls.length === 0 && finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
     throw new Error(`Gemini returned no answer (${finishReason}).`);
   }
+  if (sources.size > 0) text += `\n\nSources:\n${Array.from(sources).map(s => `- ${s}`).join('\n')}`;
 
   return {
     text,
-    inputTokens: usage.promptTokenCount ?? estimateTokens(messages.map(m => m.content).join('\n')),
+    toolCalls,
+    raw: parts,
+    inputTokens: usage.promptTokenCount ?? estimateTokens(system + textOf(turns)),
     outputTokens: (usage.candidatesTokenCount ?? estimateTokens(text)) + (usage.thoughtsTokenCount || 0),
     truncated: finishReason === 'MAX_TOKENS',
   };
 };
 
-const ollama = (url: string, model: string, maxTokens: number): ModelCall => async (messages, { onText, beat, signal }) => {
+// --- Ollama ---------------------------------------------------------------------
+
+const ollama = (url: string, model: string): Adapter => async ({ system, turns, tools, maxTokens }, { onText, beat, signal }) => {
+  const messages: any[] = [];
+  if (system) messages.push({ role: 'system', content: system });
+  for (const turn of turns) {
+    if (turn.role === 'user') {
+      messages.push({ role: 'user', content: turn.text, ...(turn.images?.length ? { images: turn.images.map(image => image.data) } : {}) });
+    } else if (turn.role === 'assistant') {
+      messages.push({
+        role: 'assistant',
+        content: turn.text,
+        ...(turn.toolCalls?.length ? { tool_calls: turn.toolCalls.map(call => ({ function: { name: call.name, arguments: call.input } })) } : {}),
+      });
+    } else {
+      for (const result of turn.results) messages.push({ role: 'tool', tool_name: result.name, content: result.output });
+    }
+  }
+
   let res: Response;
   try {
     res = await fetch(`${url}/api/chat`, {
@@ -246,6 +414,7 @@ const ollama = (url: string, model: string, maxTokens: number): ModelCall => asy
         model,
         messages,
         stream: true,
+        ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}),
         options: { num_predict: maxTokens, num_ctx: OLLAMA_NUM_CTX }
       })
     });
@@ -255,11 +424,14 @@ const ollama = (url: string, model: string, maxTokens: number): ModelCall => asy
   }
 
   if (!res.ok) {
-    throw new Error(`Ollama (${model}) failed: ${res.status} ${await res.text()}`);
+    const body = await res.text();
+    if (tools.length && /does not support tools/i.test(body)) throw new ToolsUnsupportedError(`${model} cannot call tools.`);
+    throw new Error(`Ollama (${model}) failed: ${res.status} ${body}`);
   }
 
   let text = '';
   let last: any = {};
+  const toolCalls: ToolCall[] = [];
   // One JSON object per line; the last one carries the totals
   for await (const line of readLines(res)) {
     beat();
@@ -270,40 +442,35 @@ const ollama = (url: string, model: string, maxTokens: number): ModelCall => asy
     } catch {
       continue;
     }
-    if (chunk.error) throw new Error(`Ollama (${model}) failed: ${chunk.error}`);
+    if (chunk.error) {
+      if (tools.length && /does not support tools/i.test(chunk.error)) throw new ToolsUnsupportedError(`${model} cannot call tools.`);
+      throw new Error(`Ollama (${model}) failed: ${chunk.error}`);
+    }
     if (chunk.message?.content) {
       text += chunk.message.content;
       onText(chunk.message.content);
+    }
+    for (const call of chunk.message?.tool_calls || []) {
+      const args = call.function?.arguments;
+      try {
+        toolCalls.push({ id: newCallId(), name: call.function?.name || '', input: typeof args === 'string' ? JSON.parse(args || '{}') : args || {} });
+      } catch {
+        toolCalls.push({ id: newCallId(), name: call.function?.name || '', input: {}, invalid: 'The arguments were not valid JSON.' });
+      }
     }
     if (chunk.done) last = chunk;
   }
 
   return {
     text,
+    toolCalls,
     inputTokens: last.prompt_eval_count || 0,
     outputTokens: last.eval_count || 0,
     truncated: last.done_reason === 'length',
   };
 };
 
-/** Calls the model, and if the answer is cut off mid-way asks it to carry on, so files are not left half-written. */
-const completeFully = async (call: ModelCall, messages: ChatMessage[], io: CallIO): Promise<Completion> => {
-  const conversation = [...messages];
-  const total: Completion = { text: '', inputTokens: 0, outputTokens: 0, truncated: false };
-
-  for (let round = 0; round <= MAX_CONTINUATIONS; round++) {
-    const part = await call(conversation, io);
-    total.text += part.text;
-    total.inputTokens += part.inputTokens;
-    total.outputTokens += part.outputTokens;
-    total.truncated = part.truncated;
-    total.model = part.model || total.model;
-    if (!part.truncated || !part.text) break;
-    conversation.push({ role: 'assistant', content: part.text }, { role: 'user', content: CONTINUE_PROMPT });
-  }
-
-  return total;
-};
+// --- Public interface -----------------------------------------------------------
 
 /** The model an employee on this provider uses when none was chosen for them. */
 export const defaultModel = (provider: APIProvider) => {
@@ -316,46 +483,62 @@ export const defaultModel = (provider: APIProvider) => {
   }
 };
 
-/** Runs one prompt on the employee's provider and model. Throws when the provider fails or cannot be reached. */
-export const runModel = async ({ provider, model: requestedModel, prompt, systemPrompt, history, maxTokens, onText = () => undefined, signal }: ModelRequest): Promise<ModelResult> => {
-  const limit = Math.min(Math.max(Math.floor(Number(maxTokens)) || DEFAULT_MAX_TOKENS, 1), MAX_TOKENS_LIMIT);
-
-  const messages: ChatMessage[] = [];
-  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
-  if (history) messages.push(...history);
-  messages.push({ role: 'user', content: prompt });
-
-  const model = requestedModel?.trim() || defaultModel(provider);
-  if (!model) throw new Error(`Unknown API provider: ${provider}`);
-
-  let call: ModelCall | null;
-
+/** The adapter for a provider, or null when it has no key and answers with mock text. */
+const adapterFor = (provider: APIProvider, model: string): Adapter | null => {
   if (provider === 'Grok') {
     const apiKey = getSetting('grokKey');
-    call = apiKey ? openAiCompatible(new OpenAI({ apiKey, baseURL: 'https://api.x.ai/v1' }), model, limit) : null;
-  } else if (provider === 'OpenAI') {
+    return apiKey ? openAiCompatible(new OpenAI({ apiKey, baseURL: 'https://api.x.ai/v1' }), model, 'max_tokens') : null;
+  }
+  if (provider === 'OpenAI') {
     const apiKey = getSetting('openaiKey');
-    call = apiKey ? openAiCompatible(new OpenAI({ apiKey }), model, limit) : null;
-  } else if (provider === 'Anthropic') {
+    return apiKey ? openAiCompatible(new OpenAI({ apiKey }), model, 'max_completion_tokens') : null;
+  }
+  if (provider === 'Anthropic') {
     const apiKey = getSetting('anthropicKey');
-    call = apiKey ? anthropic(new Anthropic({ apiKey }), model, limit) : null;
-  } else if (provider === 'Gemini') {
+    return apiKey ? anthropic(new Anthropic({ apiKey }), model) : null;
+  }
+  if (provider === 'Gemini') {
     const apiKey = getSetting('geminiKey');
-    call = apiKey ? gemini(apiKey, model, limit) : null;
-  } else if (provider === 'Ollama') {
-    call = ollama(getSetting('ollamaUrl').replace(/\/+$/, ''), model, limit);
-  } else {
-    throw new Error(`Unknown API provider: ${provider}`);
+    return apiKey ? gemini(apiKey, model) : null;
   }
+  if (provider === 'Ollama') return ollama(getSetting('ollamaUrl').replace(/\/+$/, ''), model);
+  throw new Error(`Unknown API provider: ${provider}`);
+};
 
-  // No key configured: answer with a mock so the interface can be explored for free
-  if (!call) {
-    const response = `[Mock ${provider} Response] ${prompt}`;
-    onText(response);
-    return { response, tokens: 15, inputTokens: 10, outputTokens: 5, model: 'mock', cost: 0, truncated: false };
-  }
+/** False for a provider without a key: it answers with mock text and cannot use tools. */
+export const hasRealModel = (provider: APIProvider) => provider === 'Ollama' || adapterFor(provider, 'x') !== null;
 
-  // One controller for both ways a call ends early: the caller stops it, or the provider goes silent
+export interface StepRequest {
+  provider: APIProvider;
+  /** Model to use. Empty = the provider's default from the settings. */
+  model?: string;
+  system?: string;
+  turns: Turn[];
+  tools?: ToolSpec[];
+  maxTokens?: number;
+  nativeWeb?: boolean;
+  /** Called with each piece of the answer as it is written. */
+  onText?: OnText;
+  /** Stops the call, for example when the user halts the office. */
+  signal?: AbortSignal;
+}
+
+export interface StepResult {
+  text: string;
+  toolCalls: ToolCall[];
+  raw?: unknown;
+  /** Input + output tokens. */
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+  /** Estimated USD; undefined when the model has no known price. */
+  cost: number | undefined;
+  truncated: boolean;
+}
+
+/** Runs `work` with a signal that fires when the caller stops it or the provider goes silent. */
+const guarded = async <T>(label: string, signal: AbortSignal | undefined, work: (io: Pick<CallIO, 'beat' | 'signal'>) => Promise<T>) => {
   const controller = new AbortController();
   const stop = () => controller.abort();
   if (signal?.aborted) stop();
@@ -372,25 +555,166 @@ export const runModel = async ({ provider, model: requestedModel, prompt, system
   };
   beat();
 
-  let result: Completion;
   try {
-    result = await completeFully(call, messages, { onText, beat, signal: controller.signal });
+    return await work({ beat, signal: controller.signal });
   } catch (error) {
-    if (timedOut) throw new Error(`${provider} (${model}) sent nothing for ${IDLE_TIMEOUT_MS / 60_000} minutes, so the call was stopped.`);
+    if (timedOut) throw new Error(`${label} sent nothing for ${IDLE_TIMEOUT_MS / 60_000} minutes, so the call was stopped.`);
     throw error;
   } finally {
     clearTimeout(idle);
     signal?.removeEventListener('abort', stop);
   }
+};
 
-  const answeredBy = result.model || model;
+/** One step of a conversation: the model answers with text, tool calls, or both. */
+export const runStep = async ({ provider, model: requestedModel, system = '', turns, tools = [], maxTokens, nativeWeb = false, onText = () => undefined, signal }: StepRequest): Promise<StepResult> => {
+  const limit = Math.min(Math.max(Math.floor(Number(maxTokens)) || DEFAULT_MAX_TOKENS, 1), MAX_TOKENS_LIMIT);
+  const model = requestedModel?.trim() || defaultModel(provider);
+  if (!model) throw new Error(`Unknown API provider: ${provider}`);
+
+  const adapter = adapterFor(provider, model);
+
+  // No key configured: answer with a mock so the interface can be explored for free
+  if (!adapter) {
+    const lastUser = [...turns].reverse().find(t => t.role === 'user');
+    const text = `[Mock ${provider} Response] ${lastUser && 'text' in lastUser ? lastUser.text : ''}`;
+    onText(text);
+    return { text, toolCalls: [], tokens: 15, inputTokens: 10, outputTokens: 5, model: 'mock', cost: 0, truncated: false };
+  }
+
+  const output = await guarded(`${provider} (${model})`, signal, io =>
+    adapter({ system, turns, tools, maxTokens: limit, nativeWeb: nativeWeb && provider === 'Anthropic' }, { onText, ...io })
+  );
+  const answeredBy = output.model || model;
   return {
-    response: result.text,
-    tokens: result.inputTokens + result.outputTokens,
-    inputTokens: result.inputTokens,
-    outputTokens: result.outputTokens,
+    text: output.text,
+    toolCalls: output.toolCalls,
+    raw: output.raw,
+    tokens: output.inputTokens + output.outputTokens,
+    inputTokens: output.inputTokens,
+    outputTokens: output.outputTokens,
     model: answeredBy,
-    cost: estimateCost(provider, answeredBy, result.inputTokens, result.outputTokens),
-    truncated: result.truncated,
+    cost: estimateCost(provider, answeredBy, output.inputTokens, output.outputTokens),
+    truncated: output.truncated,
+  };
+};
+
+export interface ModelRequest {
+  provider: APIProvider;
+  /** Model to use. Empty = the provider's default from the settings. */
+  model?: string;
+  prompt: string;
+  systemPrompt?: string;
+  /** Earlier turns of the same conversation, placed before `prompt`. */
+  history?: ChatMessage[];
+  /** Pictures shown to the model with the prompt. */
+  images?: ImagePart[];
+  maxTokens?: number;
+  onText?: OnText;
+  signal?: AbortSignal;
+}
+
+export interface ModelResult {
+  response: string;
+  /** Input + output tokens. */
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+  /** Estimated USD; undefined when the model has no known price. */
+  cost: number | undefined;
+  truncated: boolean;
+}
+
+/** Adds two cost estimates; unknown stays unknown. */
+export const addCost = (a: number | undefined, b: number | undefined) => (a === undefined || b === undefined ? undefined : a + b);
+
+/**
+ * Runs one prompt and returns the text of the answer. If the answer is cut off mid-way the
+ * model is asked to carry on, so files are not left half-written.
+ */
+export const runModel = async ({ provider, model, prompt, systemPrompt, history = [], images, maxTokens, onText, signal }: ModelRequest): Promise<ModelResult> => {
+  const turns: Turn[] = [
+    ...history.filter(m => m.role !== 'system').map(m => (m.role === 'assistant' ? { role: 'assistant' as const, text: m.content } : { role: 'user' as const, text: m.content })),
+    { role: 'user', text: prompt, images },
+  ];
+  const total: ModelResult = { response: '', tokens: 0, inputTokens: 0, outputTokens: 0, model: '', cost: 0, truncated: false };
+
+  for (let round = 0; round <= MAX_CONTINUATIONS; round++) {
+    const part = await runStep({ provider, model, system: systemPrompt, turns, maxTokens, onText, signal });
+    total.response += part.text;
+    total.tokens += part.tokens;
+    total.inputTokens += part.inputTokens;
+    total.outputTokens += part.outputTokens;
+    total.cost = addCost(total.cost, part.cost);
+    total.model = part.model;
+    total.truncated = part.truncated;
+    if (!part.truncated || !part.text) break;
+    turns.push({ role: 'assistant', text: part.text }, { role: 'user', text: CONTINUE_PROMPT });
+  }
+
+  return total;
+};
+
+// --- Web search -----------------------------------------------------------------
+
+/** Models used to look things up on behalf of an employee whose own model cannot search. */
+const SEARCH_MODELS = {
+  Anthropic: process.env.ANTHROPIC_SEARCH_MODEL || 'claude-haiku-4-5',
+  OpenAI: process.env.OPENAI_SEARCH_MODEL || 'gpt-4o-mini-search-preview',
+  Gemini: process.env.GEMINI_SEARCH_MODEL || 'gemini-2.5-flash',
+} as const;
+
+type SearchProvider = keyof typeof SEARCH_MODELS;
+
+const SEARCH_KEYS = { Anthropic: 'anthropicKey', OpenAI: 'openaiKey', Gemini: 'geminiKey' } as const;
+
+const SEARCH_SYSTEM = 'You are a research assistant. Search the web and answer the question with current, specific facts and figures. Give the date of each figure when it matters, and end with the list of source URLs you used. If you cannot find something, say so instead of guessing.';
+
+/** The provider that will run web searches: the employee's own when it can, else any with a key. */
+export const searchProviderFor = (preferred: APIProvider): SearchProvider | null => {
+  const available = (Object.keys(SEARCH_KEYS) as SearchProvider[]).filter(provider => getSetting(SEARCH_KEYS[provider]));
+  return available.find(provider => provider === preferred) || available[0] || null;
+};
+
+/** Looks something up on the web and returns an answer with its sources. */
+export const searchWeb = async (query: string, preferred: APIProvider, signal?: AbortSignal): Promise<{ answer: string; tokens: number; cost: number | undefined; model: string }> => {
+  const provider = searchProviderFor(preferred);
+  if (!provider) throw new Error('Web search needs an Anthropic, OpenAI or Gemini API key in the settings.');
+  const model = SEARCH_MODELS[provider];
+  const turns: Turn[] = [{ role: 'user', text: query }];
+
+  const output: StepOutput = await guarded(`${provider} search`, signal, async io => {
+    const call: CallIO = { onText: () => undefined, ...io };
+    if (provider === 'Anthropic') {
+      return anthropic(new Anthropic({ apiKey: getSetting('anthropicKey') }), model)({ system: SEARCH_SYSTEM, turns, tools: [], maxTokens: 2000, nativeWeb: true }, call);
+    }
+    if (provider === 'Gemini') {
+      return gemini(getSetting('geminiKey'), model, true)({ system: SEARCH_SYSTEM, turns, tools: [], maxTokens: 2000, nativeWeb: false }, call);
+    }
+    // OpenAI's search models search on every request
+    const client = new OpenAI({ apiKey: getSetting('openaiKey') });
+    const completion: any = await client.chat.completions.create({
+      model,
+      web_search_options: {},
+      messages: [{ role: 'system', content: SEARCH_SYSTEM }, { role: 'user', content: query }],
+    } as any, { signal: io.signal });
+    const message = completion.choices[0].message;
+    const links: string[] = (message.annotations || []).filter((a: any) => a.url_citation?.url).map((a: any) => `- ${a.url_citation.title || 'source'}: ${a.url_citation.url}`);
+    return {
+      text: `${message.content || ''}${links.length ? `\n\nSources:\n${Array.from(new Set(links)).join('\n')}` : ''}`,
+      toolCalls: [],
+      inputTokens: completion.usage?.prompt_tokens || 0,
+      outputTokens: completion.usage?.completion_tokens || 0,
+      truncated: false,
+    };
+  });
+
+  const answeredBy = output.model || model;
+  return {
+    answer: output.text || 'The search returned nothing.',
+    tokens: output.inputTokens + output.outputTokens,
+    cost: estimateCost(provider, answeredBy, output.inputTokens, output.outputTokens),
+    model: answeredBy,
   };
 };

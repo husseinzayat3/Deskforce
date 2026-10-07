@@ -15,6 +15,10 @@ export const SETTINGS = {
   geminiModel: { env: 'GEMINI_MODEL', secret: false, fallback: 'gemini-2.5-flash' },
   ollamaUrl: { env: 'OLLAMA_URL', secret: false, fallback: 'http://127.0.0.1:11434' },
   ollamaModel: { env: 'OLLAMA_MODEL', secret: false, fallback: 'llama3' },
+  /** 'on' lets agents search the web and read pages. */
+  webAccess: { env: 'OFFICE_WEB_ACCESS', secret: false, fallback: 'on' },
+  /** 'on' lets the office run a project's tests on this computer. Off unless the user turns it on. */
+  allowChecks: { env: 'OFFICE_ALLOW_CHECKS', secret: false, fallback: 'off' },
 } as const;
 
 export type SettingName = keyof typeof SETTINGS;

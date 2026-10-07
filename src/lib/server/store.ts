@@ -1,5 +1,5 @@
 import { getDb } from '../db';
-import { Agent, AgentState, APIProvider, AgentRole, Role, TaskItem, TaskStatus, Template } from '../types';
+import { Agent, AgentState, APIProvider, AgentRole, EventKind, Role, TaskItem, TaskStatus, Template } from '../types';
 import { DEFAULT_ROLES } from '../officeConfig';
 
 /**
@@ -48,6 +48,11 @@ const toTask = (t: any): TaskItem => ({
   clarifications: t.clarifications || undefined,
   participants: t.participants ? safeParseArray(t.participants) : undefined,
   blockedBy: t.blockedBy || undefined,
+  archived: t.archived ? true : undefined,
+  attachments: t.attachments ? safeParseArray(t.attachments) : undefined,
+  checkRuns: t.checkRuns ?? undefined,
+  checkPassed: t.checkPassed === null || t.checkPassed === undefined ? undefined : Boolean(t.checkPassed),
+  checkOutput: t.checkOutput || undefined,
   error: t.status === 'FAILED' ? t.answer || undefined : undefined,
 });
 
@@ -89,11 +94,12 @@ export interface OfficeEvent {
   id: number;
   message: string;
   at: number;
+  kind: EventKind;
 }
 
-export const pushEvent = (message: string) => {
+export const pushEvent = (message: string, kind: EventKind = 'info') => {
   const db = getDb();
-  db.prepare('INSERT INTO events (message, at) VALUES (?, ?)').run(message, Date.now());
+  db.prepare('INSERT INTO events (message, at, kind) VALUES (?, ?, ?)').run(message, Date.now(), kind);
   db.prepare('DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ?').run(MAX_EVENTS);
 };
 
@@ -101,7 +107,7 @@ export const latestEventId = () =>
   ((getDb().prepare('SELECT MAX(id) AS id FROM events').get() as { id: number | null }).id) || 0;
 
 export const listEvents = (afterId: number) =>
-  getDb().prepare('SELECT id, message, at FROM events WHERE id > ? ORDER BY id').all(afterId) as OfficeEvent[];
+  getDb().prepare('SELECT id, message, at, kind FROM events WHERE id > ? ORDER BY id').all(afterId) as OfficeEvent[];
 
 // --- agents -----------------------------------------------------------------
 
@@ -130,6 +136,14 @@ export const createAgent = (data: { name: string; role: AgentRole; api: APIProvi
   `).run(id, data.name, data.avatar, data.role, data.api, data.model || null);
   bump();
   return id;
+};
+
+/** Changes an employee in place, keeping their tasks and history. */
+export const updateAgent = (agentId: string, patch: Partial<{ name: string; role: AgentRole; api: APIProvider; model: string; avatar: string }>) => {
+  const columns = (['name', 'role', 'api', 'model', 'avatar'] as const).filter(column => column in patch);
+  if (columns.length === 0) return;
+  getDb().prepare(`UPDATE agents SET ${columns.map(c => `${c} = ?`).join(', ')} WHERE id = ?`).run(...columns.map(c => patch[c] || null), agentId);
+  bump();
 };
 
 /** Tasks are deleted with the agent (ON DELETE CASCADE). */
@@ -181,7 +195,7 @@ export const createTask = (
 };
 
 /** Columns that map one-to-one onto task fields. `response`/`error` share the `answer` column and are handled apart. */
-const PATCHABLE = ['status', 'summary', 'tokens', 'cost', 'model', 'kind', 'report', 'project', 'reviewStatus', 'reviewNote', 'feedback', 'completedAt', 'question', 'clarifications', 'blockedBy'] as const;
+const PATCHABLE = ['status', 'summary', 'tokens', 'cost', 'model', 'kind', 'report', 'project', 'reviewStatus', 'reviewNote', 'feedback', 'completedAt', 'question', 'clarifications', 'blockedBy', 'checkRuns', 'checkOutput'] as const;
 
 export const updateTask = (taskId: string, patch: Partial<TaskItem>) => {
   const sets: string[] = [];
@@ -192,6 +206,18 @@ export const updateTask = (taskId: string, patch: Partial<TaskItem>) => {
       sets.push(`${column} = ?`);
       values.push(patch[column] ?? null);
     }
+  }
+  if ('archived' in patch) {
+    sets.push('archived = ?');
+    values.push(patch.archived ? 1 : null);
+  }
+  if ('checkPassed' in patch) {
+    sets.push('checkPassed = ?');
+    values.push(patch.checkPassed === undefined ? null : Number(patch.checkPassed));
+  }
+  if ('attachments' in patch) {
+    sets.push('attachments = ?');
+    values.push(patch.attachments?.length ? JSON.stringify(patch.attachments) : null);
   }
   if ('commit' in patch) {
     sets.push('commitId = ?');
@@ -227,6 +253,23 @@ export const cancelUnfinishedTasks = () => {
   db.prepare(`UPDATE agents SET state = 'IDLE'`).run();
   bump();
 };
+
+/**
+ * Deletes tasks for good. Their cost stays counted in the month it was spent,
+ * so deleting history does not make room under the monthly cap.
+ */
+export const deleteTasks = (taskIds: string[], monthStart: number) => {
+  if (taskIds.length === 0) return;
+  const db = getDb();
+  const marks = taskIds.map(() => '?').join(', ');
+  const spent = (db.prepare(`SELECT COALESCE(SUM(cost), 0) AS total FROM tasks WHERE id IN (${marks}) AND COALESCE(completedAt, createdAt) >= ?`).get(...taskIds, monthStart) as { total: number }).total;
+  if (spent > 0) setMeta(`deletedSpend:${monthStart}`, String(deletedSpend(monthStart) + spent));
+  db.prepare(`DELETE FROM tasks WHERE id IN (${marks})`).run(...taskIds);
+  bump();
+};
+
+/** Cost of tasks that were deleted after being paid for in the month starting at `monthStart`. */
+export const deletedSpend = (monthStart: number) => Number(getMeta(`deletedSpend:${monthStart}`)) || 0;
 
 /** Estimated USD spent on tasks that finished (or, for older records, were created) since `since`. */
 export const spendSince = (since: number) =>

@@ -32,6 +32,9 @@ export async function POST(req: NextRequest) {
       if (typeof value !== 'string' || value.length > MAX_VALUE_CHARS) {
         return NextResponse.json({ error: `Invalid value for ${name}` }, { status: 400 });
       }
+      if ((name === 'webAccess' || name === 'allowChecks') && value !== '' && value !== 'on' && value !== 'off') {
+        return NextResponse.json({ error: `${name} must be "on" or "off"` }, { status: 400 });
+      }
       if (name === 'ollamaUrl' && value.trim() && !/^https?:\/\/[^\s]+$/i.test(value.trim())) {
         return NextResponse.json({ error: 'The Ollama address must start with http:// or https://' }, { status: 400 });
       }
