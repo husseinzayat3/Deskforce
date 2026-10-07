@@ -19,7 +19,7 @@ export const stripTags = (response: string) =>
     .replace(/\[FILE:\s*([^\]\n]+?)\s*\][\s\S]*?\[\/FILE\]/gi, '(saved file: $1)')
     .replace(/\[ASSIGN:\s*[^\]|]+(?:\|\s*([^\]\n]*))?\]([\s\S]*?)\[\/ASSIGN\]/gi, (_match, title: string | undefined, desc: string) => `(delegated: ${title?.trim() || firstLine(desc.trim())})`)
     .replace(/\[(?:PROJECT|SCAFFOLD):[^\]\n]*\]/gi, '')
-    .replace(/\[\/?SUMMARY\]/gi, '')
+    .replace(/\[\/?(?:SUMMARY|QUESTION|PLAN)\]/gi, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
@@ -58,6 +58,12 @@ export interface PromptContext {
   fileContents: Record<string, string>;
   /** Earlier requests on the same project and how they ended, oldest first. */
   projectHistory: { request: string; outcome: string }[];
+  /** What this employee's role is responsible for. */
+  roleInstructions: string;
+  /** Whether the agent may stop and ask the user a question. */
+  canAsk: boolean;
+  /** Plan agreed in a meeting about this piece of work, if one was held. */
+  meetingPlan?: string;
 }
 
 /**
@@ -65,12 +71,13 @@ export interface PromptContext {
  * the client's request, the manager's plan, what colleagues already finished, and the real project files.
  */
 export const buildSystemPrompt = (ctx: PromptContext) => {
-  const { agent, task, rootTask, parent, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents, projectHistory } = ctx;
+  const { agent, task, rootTask, parent, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents, projectHistory, roleInstructions, canAsk, meetingPlan } = ctx;
   const sections: string[] = [];
 
   sections.push(
     `You are ${agent.name}, the ${agent.role} of a software company. You work inside an automated office: nobody reads your message as a chat. ` +
-    `Only the tags described below have any effect, so all work you produce must be saved with them.`
+    `Only the tags described below have any effect, so all work you produce must be saved with them.` +
+    (roleInstructions.trim() ? `\n\nYour role: ${roleInstructions.trim()}` : '')
   );
 
   sections.push(namesProject
@@ -120,6 +127,14 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     sections.push('The project folder is empty so far.');
   }
 
+  if (meetingPlan) {
+    sections.push(`Before this task you met the colleagues working on the same files. This is the plan you agreed on, so keep to it:\n"""\n${meetingPlan}\n"""`);
+  }
+
+  if (task.clarifications) {
+    sections.push(`You asked the client for clarification on this task. The questions and their answers:\n"""\n${task.clarifications.trim()}\n"""\nUse the answers and do the task now.`);
+  }
+
   if (task.feedback) {
     sections.push(
       `You already did this task once and the client sent it back. Their feedback:\n"""\n${task.feedback}\n"""` +
@@ -133,7 +148,8 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     `- Deliver finished, working output. Write every file in full: no placeholders, no "TODO", no "rest of the code here", no omitted parts.\n` +
     `- To change an existing file, write the whole file again with your change applied and everything else kept. Never drop work a colleague already did.\n` +
     `- Stay consistent with the existing files: same names, imports and structure.\n` +
-    `- Code or text that appears in your message outside a [FILE] tag is lost.`
+    `- Code or text that appears in your message outside a [FILE] tag is lost.\n` +
+    `- Nothing is run for you: there is no project generator, package manager, compiler or test runner. Write every file the project needs yourself, including its configuration files (for example pubspec.yaml or package.json), and never ask anyone to run a command.`
   );
 
   if (isReview) {
@@ -149,7 +165,7 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     sections.push(
       `You can delegate parts of this work to these colleagues:\n${roster}\n\n` +
       `Delegation rules:\n` +
-      `- Do the planning and any shared setup yourself first, including [SCAFFOLD] when the project needs a skeleton.\n` +
+      `- Do the planning and any shared setup yourself first, such as the project's configuration files.\n` +
       `- If the work is small, do it yourself instead of delegating.\n` +
       `- At most ${OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK} assignments, each one different.\n` +
       `- Each assignment must stand on its own: say exactly which files to create or change and what "done" means. Your colleague sees your message, the client's request and the project files, nothing else.\n` +
@@ -169,10 +185,11 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     `To update an existing file, reuse its exact path from the list above.`
   );
 
-  if (!isReview) {
+  if (canAsk) {
     sections.push(
-      `If the project needs a Flutter or Node skeleton and does not have one yet (no pubspec.yaml or package.json in the file list), include one of these tags once. ` +
-      `The skeleton is created before your files are written:\n[SCAFFOLD: flutter] or [SCAFFOLD: node]`
+      `If the task cannot be done properly without information that only the client has (not something you can reasonably decide yourself), ask instead of guessing. ` +
+      `Respond with only this and nothing else, and the task will come back to you with the answer:\n[QUESTION] your question [/QUESTION]\n` +
+      `Ask at most one question, and only when a wrong guess would waste the work. Otherwise decide, state your assumption in the summary, and carry on.`
     );
   }
 

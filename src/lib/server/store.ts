@@ -1,12 +1,13 @@
 import { getDb } from '../db';
-import { Agent, AgentState, APIProvider, AgentRole, TaskItem, TaskStatus } from '../types';
+import { Agent, AgentState, APIProvider, AgentRole, Role, TaskItem, TaskStatus, Template } from '../types';
+import { DEFAULT_ROLES } from '../officeConfig';
 
 /**
  * The office state in SQLite. The server is the only writer: the engine and the API route
  * go through these functions, and browsers only read what they return.
  */
 
-const UNFINISHED: TaskStatus[] = ['AWAITING_APPROVAL', 'PENDING', 'IN_PROGRESS'];
+const UNFINISHED: TaskStatus[] = ['AWAITING_APPROVAL', 'WAITING_FOR_INPUT', 'PENDING', 'IN_PROGRESS'];
 const MAX_EVENTS = 100;
 
 const newId = () => Math.random().toString(36).slice(2, 11);
@@ -42,6 +43,11 @@ const toTask = (t: any): TaskItem => ({
   feedback: t.feedback || undefined,
   budget: t.budget ?? undefined,
   completedAt: t.completedAt ?? undefined,
+  commit: t.commitId || undefined,
+  question: t.question || undefined,
+  clarifications: t.clarifications || undefined,
+  participants: t.participants ? safeParseArray(t.participants) : undefined,
+  blockedBy: t.blockedBy || undefined,
   error: t.status === 'FAILED' ? t.answer || undefined : undefined,
 });
 
@@ -62,6 +68,12 @@ const bump = () => {
     INSERT INTO meta (key, value) VALUES ('version', '1')
     ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1
   `).run();
+};
+
+/** 0 removes the cap. */
+export const setMonthlyCap = (usd: number) => {
+  setMeta('monthlyCap', String(usd));
+  bump();
 };
 
 export const isPaused = () => getMeta('paused') === '1';
@@ -109,13 +121,13 @@ export const getState = (): Agent[] => {
   });
 };
 
-export const createAgent = (data: { name: string; role: AgentRole; api: APIProvider; avatar: string }) => {
+export const createAgent = (data: { name: string; role: AgentRole; api: APIProvider; avatar: string; model?: string }) => {
   const id = newId();
   // Positions are only kept for older databases; the browser decides where employees stand
   getDb().prepare(`
-    INSERT INTO agents (id, name, avatar, role, api, state, x, y, targetX, targetY)
-    VALUES (?, ?, ?, ?, ?, 'IDLE', 0, 0, 0, 0)
-  `).run(id, data.name, data.avatar, data.role, data.api);
+    INSERT INTO agents (id, name, avatar, role, api, model, state, x, y, targetX, targetY)
+    VALUES (?, ?, ?, ?, ?, ?, 'IDLE', 0, 0, 0, 0)
+  `).run(id, data.name, data.avatar, data.role, data.api, data.model || null);
   bump();
   return id;
 };
@@ -147,22 +159,23 @@ export const createTask = (
   agentId: string,
   prompt: string,
   assignedBy: string,
-  options: Pick<TaskItem, 'parentId' | 'kind' | 'reviewStatus' | 'reviewNote' | 'title' | 'project' | 'budget'> & { status?: TaskStatus } = {}
+  options: Pick<TaskItem, 'parentId' | 'kind' | 'reviewStatus' | 'reviewNote' | 'title' | 'project' | 'budget' | 'participants' | 'blockedBy'> & { status?: TaskStatus } = {}
 ) => {
   const id = newId();
   getDb().prepare(`
-    INSERT INTO tasks (id, agentId, prompt, assignedBy, status, createdAt, parentId, kind, reviewStatus, reviewNote, title, project, budget)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO tasks (id, agentId, prompt, assignedBy, status, createdAt, parentId, kind, reviewStatus, reviewNote, title, project, budget, participants, blockedBy)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, agentId, prompt, assignedBy, options.status || 'PENDING', Date.now(), options.parentId || null, options.kind || null,
-    options.reviewStatus || null, options.reviewNote || null, options.title || null, options.project || null, options.budget ?? null
+    options.reviewStatus || null, options.reviewNote || null, options.title || null, options.project || null, options.budget ?? null,
+    options.participants?.length ? JSON.stringify(options.participants) : null, options.blockedBy || null
   );
   bump();
   return id;
 };
 
 /** Columns that map one-to-one onto task fields. `response`/`error` share the `answer` column and are handled apart. */
-const PATCHABLE = ['status', 'summary', 'tokens', 'cost', 'model', 'kind', 'report', 'project', 'reviewStatus', 'reviewNote', 'feedback', 'completedAt'] as const;
+const PATCHABLE = ['status', 'summary', 'tokens', 'cost', 'model', 'kind', 'report', 'project', 'reviewStatus', 'reviewNote', 'feedback', 'completedAt', 'question', 'clarifications', 'blockedBy'] as const;
 
 export const updateTask = (taskId: string, patch: Partial<TaskItem>) => {
   const sets: string[] = [];
@@ -173,6 +186,10 @@ export const updateTask = (taskId: string, patch: Partial<TaskItem>) => {
       sets.push(`${column} = ?`);
       values.push(patch[column] ?? null);
     }
+  }
+  if ('commit' in patch) {
+    sets.push('commitId = ?');
+    values.push(patch.commit ?? null);
   }
   if ('files' in patch) {
     sets.push('files = ?');
@@ -202,5 +219,89 @@ export const cancelUnfinishedTasks = () => {
   const db = getDb();
   db.prepare(`UPDATE tasks SET status = 'CANCELLED' WHERE status IN (${UNFINISHED.map(() => '?').join(', ')})`).run(...UNFINISHED);
   db.prepare(`UPDATE agents SET state = 'IDLE'`).run();
+  bump();
+};
+
+/** Estimated USD spent on tasks that finished (or, for older records, were created) since `since`. */
+export const spendSince = (since: number) =>
+  (getDb().prepare('SELECT COALESCE(SUM(cost), 0) AS total FROM tasks WHERE COALESCE(completedAt, createdAt) >= ?').get(since) as { total: number }).total;
+
+// --- roles ------------------------------------------------------------------
+
+/** Most senior first. A new office gets the default set. */
+export const listRoles = (): Role[] => {
+  const db = getDb();
+  const count = (db.prepare('SELECT COUNT(*) AS n FROM roles').get() as { n: number }).n;
+  if (count === 0) {
+    const insert = db.prepare('INSERT INTO roles (name, rank, instructions) VALUES (?, ?, ?)');
+    for (const role of DEFAULT_ROLES) insert.run(role.name, role.rank, role.instructions);
+  }
+  return db.prepare('SELECT name, rank, instructions FROM roles ORDER BY rank, name').all() as Role[];
+};
+
+export const saveRole = (role: Role) => {
+  getDb().prepare(`
+    INSERT INTO roles (name, rank, instructions) VALUES (?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET rank = excluded.rank, instructions = excluded.instructions
+  `).run(role.name, role.rank, role.instructions);
+  bump();
+};
+
+export const deleteRole = (name: string) => {
+  getDb().prepare('DELETE FROM roles WHERE name = ?').run(name);
+  bump();
+};
+
+// --- templates --------------------------------------------------------------
+
+const toTemplate = (t: any): Template => ({
+  id: t.id,
+  name: t.name,
+  prompt: t.prompt,
+  agentId: t.agentId || undefined,
+  budget: t.budget ?? undefined,
+  project: t.project || undefined,
+  schedule: t.schedule,
+  weekday: t.weekday,
+  minuteOfDay: t.minuteOfDay,
+  nextRunAt: t.nextRunAt ?? undefined,
+  lastRunAt: t.lastRunAt ?? undefined,
+});
+
+export const listTemplates = (): Template[] =>
+  (getDb().prepare('SELECT * FROM templates ORDER BY name').all() as any[]).map(toTemplate);
+
+/** Creates the template, or replaces the one with the same id. Returns its id. */
+export const saveTemplate = (template: Omit<Template, 'id' | 'lastRunAt'> & { id?: string }) => {
+  const id = template.id || newId();
+  getDb().prepare(`
+    INSERT INTO templates (id, name, prompt, agentId, budget, project, schedule, weekday, minuteOfDay, nextRunAt)
+    VALUES (@id, @name, @prompt, @agentId, @budget, @project, @schedule, @weekday, @minuteOfDay, @nextRunAt)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name, prompt = excluded.prompt, agentId = excluded.agentId, budget = excluded.budget, project = excluded.project,
+      schedule = excluded.schedule, weekday = excluded.weekday, minuteOfDay = excluded.minuteOfDay, nextRunAt = excluded.nextRunAt
+  `).run({
+    id,
+    name: template.name,
+    prompt: template.prompt,
+    agentId: template.agentId || null,
+    budget: template.budget ?? null,
+    project: template.project || null,
+    schedule: template.schedule,
+    weekday: template.weekday,
+    minuteOfDay: template.minuteOfDay,
+    nextRunAt: template.nextRunAt ?? null,
+  });
+  bump();
+  return id;
+};
+
+export const markTemplateRun = (id: string, lastRunAt: number, nextRunAt: number | undefined) => {
+  getDb().prepare('UPDATE templates SET lastRunAt = ?, nextRunAt = ? WHERE id = ?').run(lastRunAt, nextRunAt ?? null, id);
+  bump();
+};
+
+export const deleteTemplate = (id: string) => {
+  getDb().prepare('DELETE FROM templates WHERE id = ?').run(id);
   bump();
 };

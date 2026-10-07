@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2, Download, FileText, RotateCcw, Pencil, FolderPlus, Send, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2, Download, FileText, RotateCcw, Pencil, FolderPlus, FolderOpen, FolderTree, GitCommitHorizontal, BookmarkPlus, Send, X } from 'lucide-react';
 import { Agent, TaskItem, TaskStatus } from '../lib/types';
 import { OFFICE_CONFIG, FINISHED_STATUSES, budgetOf, cleanPrompt, formatBudget, formatUsage, projectOf, sumUsage, taskTitle } from '../lib/officeConfig';
+import ProjectBrowser from './ProjectBrowser';
 import styles from './TaskTree.module.css';
 
 interface TaskNode {
@@ -14,6 +15,13 @@ interface TaskNode {
 
 interface TaskTreeProps {
   agents: Agent[];
+  /** Folder on the server's disk that holds the projects. */
+  projectsDir: string;
+  /** Task id → what its model has written so far. */
+  live: Record<string, string>;
+  notify: (message: string) => void;
+  onAnswer: (taskId: string, text: string) => void;
+  onSaveTemplate: (agent: Agent, task: TaskItem) => void;
   onCancel: (agentId: string, taskId: string) => void;
   onApprove: (agentId: string, taskId: string) => void;
   onRetry: (taskId: string) => void;
@@ -24,11 +32,18 @@ interface TaskTreeProps {
 /** The one-line form open under a task: feedback for a revision, or a new request for the same project. */
 interface Composer {
   taskId: string;
-  mode: 'revise' | 'continue';
+  mode: 'revise' | 'continue' | 'answer';
 }
+
+const COMPOSER_TEXT: Record<Composer['mode'], { placeholder: string; send: string }> = {
+  revise: { placeholder: 'What should be changed?', send: 'Send back' },
+  continue: { placeholder: 'New request for this project…', send: 'Assign' },
+  answer: { placeholder: 'Your answer…', send: 'Answer' },
+};
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
   AWAITING_APPROVAL: 'Needs Approval',
+  WAITING_FOR_INPUT: 'Has a question',
   PENDING: 'Pending',
   IN_PROGRESS: 'Working',
   COMPLETED: 'Done',
@@ -50,10 +65,12 @@ const downloadText = (filename: string, text: string) => {
 const descendants = (node: TaskNode): TaskNode[] =>
   node.children.flatMap(c => [c, ...descendants(c)]);
 
-export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevise, onContinue }: TaskTreeProps) {
+export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, onSaveTemplate, onCancel, onApprove, onRetry, onRevise, onContinue }: TaskTreeProps) {
   const [composer, setComposer] = useState<Composer | null>(null);
   const [composerText, setComposerText] = useState('');
   const [composerBudget, setComposerBudget] = useState('');
+  // The project whose files are open, optionally on what one task changed
+  const [browsing, setBrowsing] = useState<{ project: string; commit?: string } | null>(null);
 
   const openComposer = (taskId: string, mode: Composer['mode']) => {
     setComposer(composer?.taskId === taskId && composer.mode === mode ? null : { taskId, mode });
@@ -94,7 +111,7 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
       .forEach(n => onCancel(n.agent.id, n.task.id));
   };
 
-  const renderNode = (node: TaskNode, depth: number): React.ReactNode => {
+  const renderNode = (node: TaskNode, depth: number, rootProject?: string): React.ReactNode => {
     const { task, agent, children } = node;
     const subtree = descendants(node);
     const hasChildren = children.length > 0;
@@ -104,6 +121,10 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
     const pendingInBranch = [node, ...subtree].filter(n => n.task.status === 'PENDING').length;
     const progress = subtree.length ? Math.round((doneCount / subtree.length) * 100) : 0;
     const isReview = task.kind === 'REVIEW';
+    const isMeeting = task.kind === 'MEETING';
+    // Sub-tasks work in the project of the task at the top of their tree
+    const project = depth === 0 ? task.project : rootProject;
+    const writing = task.status === 'IN_PROGRESS' ? live[task.id] : undefined;
     const usage = formatUsage(task.tokens, task.cost);
     const branchTotal = sumUsage([task, ...subtree.map(n => n.task)]);
     const branchUsage = hasChildren ? formatUsage(branchTotal.tokens, branchTotal.cost) : '';
@@ -114,6 +135,7 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
       const text = composerText.trim();
       if (!text || !composing) return;
       if (composing === 'revise') onRevise(task.id, text);
+      else if (composing === 'answer') onAnswer(task.id, text);
       else onContinue(agent.id, task.project!, text, Number(composerBudget) > 0 ? Number(composerBudget) : undefined);
       setComposer(null);
     };
@@ -140,7 +162,7 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
               <span className={styles.toggleSpacer} />
             )}
 
-            <span className={styles.kind}>{depth === 0 ? 'Task' : isReview ? 'Review' : 'Sub-task'}</span>
+            <span className={styles.kind}>{depth === 0 ? 'Task' : isReview ? 'Review' : isMeeting ? 'Meeting' : 'Sub-task'}</span>
 
             <button
               id={`task-title-${task.id}`}
@@ -208,7 +230,55 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
                 </button>
               )}
 
-              {task.status === 'COMPLETED' && !isReview && (
+              {task.status === 'WAITING_FOR_INPUT' && (
+                <button
+                  id={`task-answer-${task.id}`}
+                  className={`${styles.cancelBtn} ${styles.approveBtn}`}
+                  onClick={() => openComposer(task.id, 'answer')}
+                  title="Answer the question so the task can carry on"
+                >
+                  <Send size={11} />
+                  Answer
+                </button>
+              )}
+
+              {task.commit && project && (
+                <button
+                  id={`task-changes-${task.id}`}
+                  className={`${styles.cancelBtn} ${styles.approveBtn}`}
+                  onClick={() => setBrowsing({ project, commit: task.commit })}
+                  title="See what this task changed, and undo it if needed"
+                >
+                  <GitCommitHorizontal size={11} />
+                  Changes
+                </button>
+              )}
+
+              {depth === 0 && task.project && (
+                <button
+                  id={`task-files-${task.id}`}
+                  className={`${styles.cancelBtn} ${styles.approveBtn}`}
+                  onClick={() => setBrowsing({ project: task.project! })}
+                  title="Browse this project's files and history"
+                >
+                  <FolderTree size={11} />
+                  Files
+                </button>
+              )}
+
+              {depth === 0 && (
+                <button
+                  id={`task-template-${task.id}`}
+                  className={`${styles.cancelBtn} ${styles.approveBtn}`}
+                  onClick={() => onSaveTemplate(agent, task)}
+                  title="Save this task to run again, by hand or on a schedule"
+                >
+                  <BookmarkPlus size={11} />
+                  Save as template
+                </button>
+              )}
+
+              {task.status === 'COMPLETED' && !isReview && !isMeeting && (
                 <button
                   id={`task-revise-${task.id}`}
                   className={styles.cancelBtn}
@@ -217,6 +287,18 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
                 >
                   <Pencil size={11} />
                   Request changes
+                </button>
+              )}
+
+              {depth === 0 && task.project && typeof window !== 'undefined' && window.desktop && (
+                <button
+                  id={`task-folder-${task.id}`}
+                  className={`${styles.cancelBtn} ${styles.approveBtn}`}
+                  onClick={() => window.desktop!.openProject(task.project!)}
+                  title="Show this project's files"
+                >
+                  <FolderOpen size={11} />
+                  Open folder
                 </button>
               )}
 
@@ -244,6 +326,13 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
                 </button>
               ) : null}
 
+              {task.status === 'WAITING_FOR_INPUT' && (
+                <button className={styles.cancelBtn} onClick={() => onCancel(agent.id, task.id)} title="Cancel this task">
+                  <OctagonX size={11} />
+                  Cancel
+                </button>
+              )}
+
               {pendingInBranch > 0 && task.status !== 'AWAITING_APPROVAL' && (
                 <button
                   id={`task-cancel-${task.id}`}
@@ -258,13 +347,26 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
             </span>
           </div>
 
+          {task.status === 'WAITING_FOR_INPUT' && task.question && (
+            <div className={styles.detailSummary} style={{ marginTop: 8 }}>
+              <strong>{agent.name} asks:</strong>
+              <p>{task.question}</p>
+            </div>
+          )}
+
+          {writing && (
+            <div className={styles.detailResponse} style={{ marginTop: 8, maxHeight: 120, overflow: 'hidden', display: 'flex', flexDirection: 'column-reverse', fontFamily: 'ui-monospace, monospace', fontSize: 10 }} aria-live="off" title="What the model is writing right now">
+              <span>{writing.slice(-700)}</span>
+            </div>
+          )}
+
           {composing && (
             <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}>
               <input
                 autoFocus
                 type="text"
-                aria-label={composing === 'revise' ? 'What should be changed' : 'New request for this project'}
-                placeholder={composing === 'revise' ? 'What should be changed?' : `New request for ${task.project}…`}
+                aria-label={COMPOSER_TEXT[composing].placeholder}
+                placeholder={COMPOSER_TEXT[composing].placeholder}
                 value={composerText}
                 onChange={e => setComposerText(e.target.value)}
                 onKeyDown={e => {
@@ -291,9 +393,9 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
                   style={{ width: 64, fontSize: 11, padding: '4px 6px', border: '1px solid #cbd5e1', borderRadius: 4 }}
                 />
               )}
-              <button className={`${styles.cancelBtn} ${styles.approveBtn}`} onClick={submitComposer} title={composing === 'revise' ? 'Send back' : 'Assign'}>
+              <button className={`${styles.cancelBtn} ${styles.approveBtn}`} onClick={submitComposer}>
                 <Send size={11} />
-                {composing === 'revise' ? 'Send back' : 'Assign'}
+                {COMPOSER_TEXT[composing].send}
               </button>
               <button className={styles.cancelBtn} onClick={() => setComposer(null)} aria-label="Close">
                 <X size={11} />
@@ -317,6 +419,12 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
               <div className={styles.detailPrompt}>{cleanPrompt(task.prompt)}</div>
               {task.response && <div className={styles.detailResponse}>{task.response}</div>}
               {task.error && <div className={styles.detailError}>{task.error}</div>}
+              {task.clarifications && (
+                <div className={styles.detailSummary}>
+                  <strong>Questions and your answers:</strong>
+                  <p style={{ whiteSpace: 'pre-wrap' }}>{task.clarifications.trim()}</p>
+                </div>
+              )}
               {task.feedback && (
                 <div className={styles.detailSummary}>
                   <strong>{task.reviewStatus === 'CHANGES_REQUESTED' ? 'Changes requested:' : 'Redone after your feedback:'}</strong>
@@ -352,7 +460,7 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
                   {task.report}
                 </div>
               )}
-              {task.project && <div className={styles.detailTime}>Project folder: workspace/projects/{task.project}</div>}
+              {task.project && <div className={styles.detailTime}>Project folder: {projectsDir}/{task.project}</div>}
               <div className={styles.detailTime}>{new Date(task.timestamp).toLocaleString()}</div>
             </div>
           )}
@@ -360,7 +468,7 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
 
         {hasChildren && !isCollapsed && (
           <ul className={styles.children}>
-            {children.map(child => renderNode(child, depth + 1))}
+            {children.map(child => renderNode(child, depth + 1, project))}
           </ul>
         )}
       </li>
@@ -377,5 +485,18 @@ export default function TaskTree({ agents, onCancel, onApprove, onRetry, onRevis
     );
   }
 
-  return <ul className={styles.tree}>{roots.map(r => renderNode(r, 0))}</ul>;
+  return (
+    <>
+      {browsing && (
+        <ProjectBrowser
+          key={`${browsing.project}:${browsing.commit || ''}`}
+          project={browsing.project}
+          commitId={browsing.commit}
+          onClose={() => setBrowsing(null)}
+          notify={notify}
+        />
+      )}
+      <ul className={styles.tree}>{roots.map(r => renderNode(r, 0))}</ul>
+    </>
+  );
 }

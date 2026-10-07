@@ -1,0 +1,9 @@
+{
+  "name": "my-office-desktop",
+  "productName": "My Office",
+  "version": "0.1.0",
+  "description": "My Office — AI agent simulation",
+  "author": "Hussein Zayat <husseinzayat10@hotmail.com>",
+  "private": true,
+  "main": "main.js"
+}

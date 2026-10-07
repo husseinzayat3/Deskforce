@@ -28,7 +28,7 @@ const inOrder = (root: TaskRef, tree: TaskRef[]) => {
 const titleOf = (ref: TaskRef) => (ref.task.kind === 'REVIEW' ? 'Final review' : taskTitle(ref.task));
 
 /** Markdown report for a finished task tree: the outcome, who did what, what it cost, and the files delivered. */
-export const buildReport = (root: TaskRef, tree: TaskRef[]) => {
+export const buildReport = (root: TaskRef, tree: TaskRef[], folder = `workspace/projects/${projectOf(root.task)}`) => {
   const ordered = inOrder(root, tree);
   const total = sumUsage(tree.map(ref => ref.task));
   // The latest one, in case the work was reviewed again after a revision
@@ -48,7 +48,7 @@ export const buildReport = (root: TaskRef, tree: TaskRef[]) => {
     '## Overview',
     '',
     `- **Assigned to:** ${root.agent.name} (${root.agent.role})`,
-    `- **Project folder:** workspace/projects/${projectOf(root.task)}`,
+    `- **Project folder:** ${folder}`,
     `- **Started:** ${new Date(root.task.timestamp).toLocaleString()}`,
     `- **Report created:** ${new Date().toLocaleString()}`,
     `- **Tasks:** ${tree.length} (${tree.filter(ref => ref.task.status === 'COMPLETED').length} done, ${tree.filter(ref => ref.task.status === 'FAILED').length} failed, ${tree.filter(ref => ref.task.status === 'CANCELLED').length} cancelled)`,

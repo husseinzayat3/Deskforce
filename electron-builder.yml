@@ -1,0 +1,32 @@
+appId: com.myoffice.app
+productName: My Office
+copyright: Copyright © 2026 Hussein Zayat
+
+directories:
+  app: electron
+  output: dist-desktop
+  buildResources: build-desktop
+
+files:
+  - main.js
+  - preload.js
+  - package.json
+
+# Kept as plain files so electron/after-pack.js can finish the bundle:
+# it adds the Next.js server (.next-desktop/standalone) and signs the result.
+asar: false
+afterPack: electron/after-pack.js
+
+# The shell has no native modules; the server's one is prepared by scripts/build-desktop.sh
+npmRebuild: false
+
+mac:
+  category: public.app-category.developer-tools
+  icon: build-desktop/icon.icns
+  target:
+    - dmg
+  # No Apple Developer ID: see electron/after-pack.js
+  identity: null
+
+dmg:
+  title: "${productName} ${version}"

@@ -1,10 +1,13 @@
-import { Agent, TaskItem } from '../types';
-import { OFFICE_CONFIG, ROLE_RANK, FINISHED_STATUSES, TaskRef, budgetOf, cleanPrompt, formatBudget, indexTasks, getAncestors, getRoot, getTree, projectOf, projectNameFromPrompt, slugifyProjectName, similarity, spentOn, stripGuardrailNote, titleFromDescription } from '../officeConfig';
+import { Agent, Role, TaskItem } from '../types';
+import { OFFICE_CONFIG, FINISHED_STATUSES, TaskRef, rankOf, startOfMonth, taskTitle, budgetOf, cleanPrompt, formatBudget, indexTasks, getAncestors, getRoot, getTree, projectOf, projectNameFromPrompt, slugifyProjectName, similarity, spentOn, stripGuardrailNote, titleFromDescription } from '../officeConfig';
 import { buildSystemPrompt, FILE_PATH_PLACEHOLDER, PROJECT_NAME_PLACEHOLDER, REVIEW_TASK_PROMPT } from '../agentPrompt';
 import { buildReport, buildTranscript, reportFilename, transcriptFilename } from '../report';
 import * as store from './store';
 import { runModel } from './llm';
-import { listProjectFiles, projectExists, readProjectContents, scaffoldProject, writeProjectFile, ScaffoldKind } from './workspace';
+import { listProjectFiles, projectExists, projectPath, readProjectContents, writeProjectFile } from './workspace';
+import { authorFor, commitProject } from './git';
+import { appendLive, endLive, startLive } from './live';
+import { nextRunTime } from '../schedule';
 
 /**
  * The office engine: runs queued tasks on the server, so work carries on when no browser is open.
@@ -21,6 +24,12 @@ const RATE_LIMIT_COOLDOWN_MS = 60_000;
 const DUPLICATE_SIMILARITY = 0.8;
 
 const PLACEHOLDER_FILENAMES = new Set([FILE_PATH_PLACEHOLDER, 'filename.ext']);
+
+/** How many times one task may stop to ask the user something. */
+const MAX_QUESTIONS_PER_TASK = 2;
+
+/** Something that looks like a file path or file name inside an assignment. */
+const FILE_MENTION = /[\w./-]*[\w-]+\.[a-z][a-z0-9]{0,5}\b/gi;
 
 interface EngineState {
   timer?: ReturnType<typeof setInterval>;
@@ -106,7 +115,82 @@ const projectHistoryOf = (rootTask: TaskItem, agents: Agent[], taskIndex: Map<st
 /** Adds two cost estimates; unknown stays unknown. */
 const addCost = (a: number | undefined, b: number | undefined) => (a === undefined || b === undefined ? undefined : a + b);
 
-const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[]) => {
+/** Files an assignment says it will touch, lower-cased. */
+const filesMentioned = (description: string) =>
+  new Set((description.match(FILE_MENTION) || []).map(f => f.toLowerCase().replace(/^\.?\//, '')).filter(f => !/^\d+\.\d+$/.test(f)));
+
+/** First line of a commit message for a task. */
+const commitTitle = (task: TaskItem) => (task.kind === 'REVIEW' ? 'Final review' : taskTitle(task)).slice(0, 72);
+
+/**
+ * A meeting: the participants were asked to change the same files, so before either starts
+ * they agree who does what. One proposes, the other answers with the plan both will follow.
+ */
+const holdMeeting = async (host: Agent, task: TaskItem, agents: Agent[]) => {
+  if (!store.transitionTask(task.id, 'PENDING', 'IN_PROGRESS')) return;
+  engine.running.set(task.id, host.id);
+  store.setAgentState(host.id, 'WORKING');
+  startLive(task.id);
+
+  try {
+    const guest = agents.find(a => a.id !== host.id && task.participants?.includes(a.id));
+    if (!guest) throw new Error('The other participant is no longer in the office.');
+
+    const rules = 'You are in a short meeting because you were both asked to change the same files. Plain text only, no tags unless asked, and under 150 words.';
+
+    appendLive(task.id, `${host.name}: `);
+    const proposal = await runModel({
+      provider: host.api,
+      model: host.model,
+      systemPrompt: `You are ${host.name}, the ${host.role}. You are meeting ${guest.name}, the ${guest.role}. ${rules}
+Propose how to split the work so nobody overwrites the other: who changes which file or which part of it, and in what order.`,
+      prompt: task.prompt,
+      maxTokens: 600,
+      onText: delta => appendLive(task.id, delta),
+    });
+
+    appendLive(task.id, `\n\n${guest.name}: `);
+    const reply = await runModel({
+      provider: guest.api,
+      model: guest.model,
+      systemPrompt: `You are ${guest.name}, the ${guest.role}. You are meeting ${host.name}, the ${host.role}. ${rules}
+Agree with the proposal or adjust it, then give the final plan both of you will follow inside [PLAN] ... [/PLAN].`,
+      prompt: `${task.prompt}\n\n${host.name} proposes:\n${proposal.response}`,
+      maxTokens: 600,
+      onText: delta => appendLive(task.id, delta),
+    });
+
+    store.addAgentTokens(host.id, proposal.tokens);
+    store.addAgentTokens(guest.id, reply.tokens);
+
+    const current = store.getTask(task.id);
+    if (!current || current.status === 'CANCELLED') return;
+
+    store.updateTask(task.id, {
+      status: 'COMPLETED',
+      completedAt: Date.now(),
+      response: `${host.name}: ${proposal.response.trim()}\n\n${guest.name}: ${reply.response.trim()}`,
+      summary: reply.response.match(/\[PLAN\]([\s\S]*?)\[\/PLAN\]/i)?.[1].trim() || reply.response.trim(),
+      tokens: proposal.tokens + reply.tokens,
+      cost: addCost(proposal.cost, reply.cost),
+      model: proposal.model === reply.model ? proposal.model : `${proposal.model} / ${reply.model}`,
+    });
+  } catch (e: any) {
+    const current = store.getTask(task.id);
+    if (current && current.status !== 'CANCELLED') {
+      // The tasks waiting on the meeting still run, one after the other
+      store.updateTask(task.id, { status: 'FAILED', error: e?.message || 'Unknown error' });
+    }
+  } finally {
+    endLive(task.id);
+    engine.running.delete(task.id);
+    store.setAgentState(host.id, 'IDLE');
+  }
+};
+
+const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles: Role[]) => {
+  if (task.kind === 'MEETING') return holdMeeting(agent, task, agents);
+
   const taskIndex = indexTasks(agents);
   const rootTask = getRoot(task.id, taskIndex)?.task || task;
   const isReview = task.kind === 'REVIEW';
@@ -134,6 +218,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[]) => {
   if (!store.transitionTask(task.id, 'PENDING', 'IN_PROGRESS')) return;
   engine.running.set(task.id, agent.id);
   store.setAgentState(agent.id, 'WORKING');
+  startLive(task.id);
 
   /** True once the task was halted (or its agent removed) while the model was working. */
   const wasCancelled = () => {
@@ -153,20 +238,31 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[]) => {
     // Only offer colleagues this agent is actually allowed to delegate to
     const canDelegate = !isReview && depth < OFFICE_CONFIG.MAX_DELEGATION_DEPTH;
     const colleagues = canDelegate
-      ? agents.filter(a => a.id !== agent.id && ROLE_RANK[a.role] > ROLE_RANK[agent.role])
+      ? agents.filter(a => a.id !== agent.id && rankOf(roles, a.role) > rankOf(roles, agent.role))
       : [];
+
+    const canAsk = !isReview && (task.clarifications?.match(/^Q: /gm) || []).length < MAX_QUESTIONS_PER_TASK;
+    // The plan from a meeting this employee took part in, if one was held for this piece of work
+    const meetingPlan = tree
+      .filter(ref => ref.task.kind === 'MEETING' && ref.task.status === 'COMPLETED' && ref.task.parentId === task.parentId && ref.task.participants?.includes(agent.id))
+      .sort((a, b) => b.task.timestamp - a.task.timestamp)[0]?.task.summary;
 
     const systemPrompt = buildSystemPrompt({
       agent, task, rootTask, parent: ancestors[0], tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents,
-      projectHistory: projectHistoryOf(rootTask, agents, taskIndex)
+      projectHistory: projectHistoryOf(rootTask, agents, taskIndex),
+      roleInstructions: roles.find(r => r.name === agent.role)?.instructions || '',
+      canAsk,
+      meetingPlan,
     });
 
     const prompt = stripGuardrailNote(task.prompt);
     const result = await runModel({
       provider: agent.api,
+      model: agent.model,
       prompt,
       systemPrompt,
-      maxTokens: isReview ? OFFICE_CONFIG.REVIEW_MAX_TOKENS : undefined
+      maxTokens: isReview ? OFFICE_CONFIG.REVIEW_MAX_TOKENS : undefined,
+      onText: delta => appendLive(task.id, delta),
     });
 
     if (result.tokens) store.addAgentTokens(agent.id, result.tokens);
@@ -181,6 +277,22 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[]) => {
     let response = result.response;
     let tokens = result.tokens;
     let cost = result.cost;
+
+    // The agent needs something from the user before it can do the work: park the task until it is answered
+    const question = canAsk ? response.match(/\[QUESTION\]([\s\S]*?)\[\/QUESTION\]/i)?.[1].trim() : undefined;
+    if (question) {
+      store.updateTask(task.id, {
+        status: 'WAITING_FOR_INPUT',
+        question,
+        response,
+        tokens: (task.tokens || 0) + tokens,
+        cost: addCost(task.tokens ? task.cost : 0, cost),
+        model: result.model,
+      });
+      store.pushEvent(`${agent.name} has a question for you.`);
+      return;
+    }
+
     const summary = response.match(/\[SUMMARY\]([\s\S]*?)\[\/SUMMARY\]/i)?.[1].trim();
     const problems: string[] = [];
 
@@ -192,6 +304,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[]) => {
       try {
         const repair = await runModel({
           provider: agent.api,
+          model: agent.model,
           systemPrompt,
           history: [{ role: 'user', content: prompt }, { role: 'assistant', content: result.response }],
           prompt: `Your response contained the file "${path}" without a closing [/FILE] tag, so it could not be saved. Send that one file again, complete, in exactly this format and with nothing else:\n[FILE: ${path}]\nfile contents\n[/FILE]`,
@@ -229,22 +342,8 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[]) => {
       store.updateTask(task.id, { project: slug });
     }
 
-    // Scaffold first, so the files below (and delegated work) land in a finished skeleton
-    if (!isReview) {
-      const kinds = new Set<ScaffoldKind>();
-      const scaffoldRegex = /\[SCAFFOLD:\s*(flutter|node)\]/gi;
-      let scaffoldMatch;
-      while ((scaffoldMatch = scaffoldRegex.exec(response)) !== null) {
-        kinds.add(scaffoldMatch[1].toLowerCase() as ScaffoldKind);
-      }
-      for (const kind of Array.from(kinds)) {
-        try {
-          await scaffoldProject(slug, kind);
-        } catch (e: any) {
-          problems.push(`Scaffold ${kind}: ${e.message}`);
-        }
-      }
-    }
+    // Files that were already there before history was kept go in first, so this task's commit shows only its own changes
+    await commitProject(slug, 'Files from before history was kept').catch(() => undefined);
 
     // Parse file creations (each path is validated to stay inside the project)
     const writtenFiles: string[] = [];
@@ -265,14 +364,23 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[]) => {
       problems.push('The response reached the length limit and may be incomplete.');
     }
 
+    // One commit per task, in the agent's name: the project's history, and what "undo" takes back
+    let commit: string | undefined;
+    if (writtenFiles.length > 0) {
+      try {
+        commit = await commitProject(slug, `${commitTitle(task)}\n\nTask ${task.id}, by ${agent.name} (${agent.role})`, authorFor(agent.name));
+      } catch (e: any) {
+        problems.push(`History: the files were saved but could not be committed (${e.message}).`);
+      }
+    }
+
     if (wasCancelled()) return;
 
     // Parse assignments (after the files are saved, so delegated work starts from the current project)
     if (canDelegate) {
       const currentTree = getTree(rootTask.id, indexTasks(currentAgents));
-      let spawned = 0;
       const knownPrompts = currentTree.map(ref => ref.task.prompt);
-      const proposed: string[] = [];
+      const assignments: { target: Agent; title: string; description: string; violation: string }[] = [];
       // [ASSIGN: id | Short title] description [/ASSIGN] — the title is optional
       const regex = /\[ASSIGN:\s*([a-zA-Z0-9_-]+)\s*(?:\|\s*([^\]\n]*?))?\s*\]([\s\S]*?)\[\/ASSIGN\]/gi;
       let match;
@@ -283,25 +391,52 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[]) => {
 
         const targetAgent = currentAgents.find(a => a.id === targetId);
         // The same assignment repeated within one response is simply dropped
-        if (!targetAgent || !taskDesc || proposed.some(isDuplicate)) continue;
+        if (!targetAgent || !taskDesc || assignments.some(a => isDuplicate(a.description))) continue;
 
         // Apply Guardrails
         let violation = '';
-        if (spawned >= OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK) violation = `Max subtasks ${OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK} reached.`;
+        if (assignments.length >= OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK) violation = `Max subtasks ${OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK} reached.`;
         else if (overBudget(cost || 0)) violation = budgetNote(cost || 0);
-        else if (ROLE_RANK[targetAgent.role] <= ROLE_RANK[agent.role]) violation = `Cannot delegate to equal or higher rank (${targetAgent.role}).`;
+        else if (rankOf(roles, targetAgent.role) <= rankOf(roles, agent.role)) violation = `Cannot delegate to equal or higher rank (${targetAgent.role}).`;
         else if (knownPrompts.some(isDuplicate)) violation = `Duplicate task detected.`;
 
-        proposed.push(taskDesc);
-        spawned += 1;
+        assignments.push({ target: targetAgent, title: match[2]?.trim() || titleFromDescription(taskDesc), description: taskDesc, violation });
+      }
 
+      // Assignments to different people that name the same file would overwrite each other.
+      // They meet first to agree on a split, then work one after the other.
+      const runnable = assignments.filter(a => !a.violation);
+      const clashing = runnable.filter(a => {
+        const mine = filesMentioned(a.description);
+        return runnable.some(b => b.target.id !== a.target.id && Array.from(filesMentioned(b.description)).some(f => mine.has(f)));
+      });
+      const shared = Array.from(new Set(clashing.flatMap(a => Array.from(filesMentioned(a.description))))).filter(f =>
+        clashing.filter(a => filesMentioned(a.description).has(f)).length > 1
+      );
+      const attendees = Array.from(new Set(clashing.map(a => a.target.id)));
+
+      let waitFor: string | undefined;
+      if (attendees.length >= 2) {
+        waitFor = store.createTask(
+          attendees[0],
+          `Files more than one of you was asked to change: ${shared.join(', ')}\n\nThe tasks:\n${clashing.map(a => `- ${a.target.name} (${a.target.role}): ${a.title} — ${a.description}`).join('\n')}`,
+          agent.name,
+          { parentId: task.id, kind: 'MEETING', title: `Meeting about ${shared.slice(0, 3).join(', ')}`, participants: attendees }
+        );
+      }
+
+      for (const assignment of assignments) {
+        const blockedBy = clashing.includes(assignment) ? waitFor : undefined;
         // Linked to the task that produced it so the board can nest it
-        store.createTask(targetAgent.id, `Task delegated from ${agent.name}:\n${taskDesc}`, agent.name, {
+        const id = store.createTask(assignment.target.id, `Task delegated from ${agent.name}:\n${assignment.description}`, agent.name, {
           parentId: task.id,
-          title: match[2]?.trim() || titleFromDescription(taskDesc),
-          status: violation ? 'AWAITING_APPROVAL' : 'PENDING',
-          ...(violation ? { reviewStatus: 'PENDING_REVIEW' as const, reviewNote: violation } : {})
+          title: assignment.title,
+          status: assignment.violation ? 'AWAITING_APPROVAL' : 'PENDING',
+          blockedBy,
+          ...(assignment.violation ? { reviewStatus: 'PENDING_REVIEW' as const, reviewNote: assignment.violation } : {})
         });
+        // The next task on the same files waits for this one
+        if (blockedBy) waitFor = id;
       }
     }
 
@@ -319,6 +454,8 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[]) => {
       model: result.model,
       summary,
       files: writtenFiles.length > 0 ? writtenFiles : undefined,
+      commit,
+      question: undefined,
       reviewStatus: undefined,
       reviewNote: problems.length > 0 ? problems.join('\n') : undefined
     });
@@ -333,6 +470,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[]) => {
     // Do not hammer a provider that just asked us to slow down
     if (isRateLimit) engine.cooldown.set(agent.id, Date.now() + RATE_LIMIT_COOLDOWN_MS);
   } finally {
+    endLive(task.id);
     engine.running.delete(task.id);
     store.setAgentState(agent.id, 'IDLE');
   }
@@ -356,7 +494,7 @@ const wrapUp = (agents: Agent[]) => {
 
       // Several people worked on it: have the owner check the pieces fit together before reporting.
       // Work redone after a review (a retry or a revision) gets a fresh review.
-      const work = subtasks.filter(ref => ref.task.kind !== 'REVIEW' && ref.task.status === 'COMPLETED');
+      const work = subtasks.filter(ref => !ref.task.kind && ref.task.status === 'COMPLETED');
       const lastWork = Math.max(root.completedAt || 0, ...work.map(ref => ref.task.completedAt || 0));
       const reviewed = subtasks.some(ref => ref.task.kind === 'REVIEW' && ref.task.timestamp >= lastWork);
       if (work.length > 0 && !reviewed) {
@@ -365,13 +503,14 @@ const wrapUp = (agents: Agent[]) => {
       }
 
       const rootRef = { task: root, agent };
-      const report = buildReport(rootRef, tree);
+      const report = buildReport(rootRef, tree, projectPath(root.project));
       store.updateTask(root.id, { report });
       try {
         // Follow-up requests on the same project get their own numbered report
         const sequence = agents.flatMap(a => a.taskQueue).filter(t => !t.parentId && t.project === root.project && t.timestamp <= root.timestamp).length;
         writeProjectFile(root.project, reportFilename(sequence), report);
         writeProjectFile(root.project, transcriptFilename(sequence), buildTranscript(rootRef, tree));
+        void commitProject(root.project, `Add the report for: ${commitTitle(root)}`).catch(() => undefined);
         store.pushEvent(`Report ready: ${root.project}`);
       } catch (e: any) {
         store.pushEvent(`Could not save the report files for ${root.project}: ${e.message}`);
@@ -380,12 +519,42 @@ const wrapUp = (agents: Agent[]) => {
   }
 };
 
+/** Spending this calendar month against the cap the user set (0 = no cap). */
+export const monthStatus = (now = Date.now()) => {
+  const cap = Number(store.getMeta('monthlyCap')) || 0;
+  const spent = store.spendSince(startOfMonth(now));
+  return { cap, spent, reached: cap > 0 && spent >= cap };
+};
+
+/** Assigns the tasks whose schedule has come due. */
+const runSchedules = (agents: Agent[], now: number) => {
+  for (const template of store.listTemplates()) {
+    if (template.schedule === 'none' || !template.nextRunAt || template.nextRunAt > now) continue;
+
+    const agent = agents.find(a => a.id === template.agentId);
+    if (agent) {
+      // Keep working in the same project when it still exists; otherwise the run starts a new one
+      const project = template.project && projectExists(template.project) ? template.project : undefined;
+      store.createTask(agent.id, template.prompt, `Schedule: ${template.name}`, { budget: template.budget, project });
+      store.pushEvent(`Scheduled task started: ${template.name}`);
+    } else {
+      store.pushEvent(`Scheduled task "${template.name}" was skipped: its employee is no longer in the office.`);
+    }
+    store.markTemplateRun(template.id, now, nextRunTime(template, now));
+  }
+};
+
 const tick = () => {
   try {
     if (!holdOwnership()) return;
 
+    const now = Date.now();
+    runSchedules(store.getState(), now);
+
     const agents = store.getState();
+    const roles = store.listRoles();
     const busy = new Set(engine.running.values());
+    const tasksById = new Map(agents.flatMap(a => a.taskQueue).map(t => [t.id, t]));
 
     // After a restart nothing is really in flight: put interrupted work back in the queue
     for (const agent of agents) {
@@ -398,16 +567,27 @@ const tick = () => {
       if (agent.state === 'WORKING' && !busy.has(agent.id)) store.setAgentState(agent.id, 'IDLE');
     }
 
-    if (!store.isPaused()) {
-      const now = Date.now();
+    // The monthly cap stops new work from starting; whatever is running finishes
+    const month = monthStatus(now);
+    const monthKey = String(startOfMonth(now));
+    if (month.reached && store.getMeta('capNotified') !== monthKey) {
+      store.setMeta('capNotified', monthKey);
+      store.pushEvent(`Monthly cap of $${month.cap.toFixed(2)} reached. No new tasks will start until you raise it or the month ends.`);
+    }
+
+    if (!store.isPaused() && !month.reached) {
       for (const agent of agents) {
         if (busy.has(agent.id) || (engine.cooldown.get(agent.id) || 0) > now) continue;
 
-        // Oldest pending task first
+        // Oldest pending task first, leaving out those that wait for another task to finish
         const nextTask = agent.taskQueue
-          .filter(t => t.status === 'PENDING')
+          .filter(t => {
+            if (t.status !== 'PENDING') return false;
+            const blocker = t.blockedBy ? tasksById.get(t.blockedBy) : undefined;
+            return !blocker || FINISHED_STATUSES.has(blocker.status);
+          })
           .reduce<TaskItem | undefined>((oldest, t) => (!oldest || t.timestamp <= oldest.timestamp ? t : oldest), undefined);
-        if (nextTask) void executeTask(agent, nextTask, agents);
+        if (nextTask) void executeTask(agent, nextTask, agents, roles);
       }
     }
 

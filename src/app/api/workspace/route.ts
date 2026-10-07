@@ -1,29 +1,92 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listProjectFiles, projectExists, safeProject, zipProject } from '../../../lib/server/workspace';
+import { listProjectFiles, previewEntry, projectExists, safeProject, viewProjectFile, zipProject } from '../../../lib/server/workspace';
+import { commitChanges, projectHistory, undoCommit } from '../../../lib/server/git';
+import { startPreview } from '../../../lib/server/preview';
+import { refuseForeignRequest } from '../../../lib/server/guard';
+
+export const dynamic = 'force-dynamic';
+
+const COMMIT_ID = /^[0-9a-f]{40}$/;
 
 /**
- * GET /api/workspace?project=slug             → whether the project exists, and its files
- * GET /api/workspace?project=slug&download=1  → the whole project as a .zip
+ * GET /api/workspace?project=slug               → files, history, and whether it can be previewed
+ * GET /api/workspace?project=slug&file=path     → one file as text
+ * GET /api/workspace?project=slug&commit=id     → what one commit changed
+ * GET /api/workspace?project=slug&download=1    → the whole project as a .zip
  *
- * Read-only: files are written by the office engine on the server, never by the browser.
+ * Files are written by the office engine on the server, never by the browser.
  */
 export async function GET(req: NextRequest) {
-  const params = new URL(req.url).searchParams;
-  const project = safeProject(params.get('project'));
-  if (!project) return NextResponse.json({ error: 'Invalid project' }, { status: 400 });
-  const exists = projectExists(project);
+  try {
+    const params = new URL(req.url).searchParams;
+    const project = safeProject(params.get('project'));
+    if (!project) return NextResponse.json({ error: 'Invalid project' }, { status: 400 });
+    if (!projectExists(project)) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
-  if (params.has('download')) {
-    if (!exists) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
-    const zip = zipProject(project);
-    return new NextResponse(new Uint8Array(zip), {
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': `attachment; filename="${project}.zip"`,
-        'Content-Length': String(zip.length),
-      },
+    if (params.has('download')) {
+      const zip = zipProject(project);
+      return new NextResponse(new Uint8Array(zip), {
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="${project}.zip"`,
+          'Content-Length': String(zip.length),
+        },
+      });
+    }
+
+    const file = params.get('file');
+    if (file !== null) {
+      const view = viewProjectFile(project, file);
+      return view ? NextResponse.json(view) : NextResponse.json({ error: 'File not found' }, { status: 404 });
+    }
+
+    const commit = params.get('commit');
+    if (commit !== null) {
+      if (!COMMIT_ID.test(commit)) return NextResponse.json({ error: 'Invalid commit' }, { status: 400 });
+      return NextResponse.json(await commitChanges(project, commit));
+    }
+
+    return NextResponse.json({
+      project,
+      files: listProjectFiles(project),
+      history: await projectHistory(project),
+      canPreview: Boolean(previewEntry(project)),
     });
+  } catch (error: any) {
+    console.error('Workspace GET error:', error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
 
-  return NextResponse.json({ project, exists, files: listProjectFiles(project) });
+/**
+ * POST /api/workspace
+ *  { action: 'undo', project, commit }   put the files one task changed back as they were
+ *  { action: 'preview', project }        serve the project's web page and return its address
+ */
+export async function POST(req: NextRequest) {
+  const refusal = refuseForeignRequest(req);
+  if (refusal) return refusal;
+
+  try {
+    const body = await req.json();
+    const project = safeProject(body.project);
+    if (!project || !projectExists(project)) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+
+    if (body.action === 'undo') {
+      if (typeof body.commit !== 'string' || !COMMIT_ID.test(body.commit)) return NextResponse.json({ error: 'Invalid commit' }, { status: 400 });
+      return NextResponse.json(await undoCommit(project, body.commit));
+    }
+
+    if (body.action === 'preview') {
+      const url = await startPreview(project);
+      return url
+        ? NextResponse.json({ url })
+        : NextResponse.json({ error: 'This project has no web page (index.html) to preview.' }, { status: 400 });
+    }
+
+    return NextResponse.json({ error: `Unknown action: ${body.action}` }, { status: 400 });
+  } catch (error: any) {
+    console.error('Workspace POST error:', error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 }

@@ -3,9 +3,10 @@
 import React from 'react';
 import { useSimulation } from '../lib/SimulationContext';
 import { motion } from 'framer-motion';
+import { taskTitle } from '../lib/officeConfig';
 
 export default function OfficeSimulation() {
-  const { agents, focus, focusAgent } = useSimulation();
+  const { agents, live, focus, focusAgent } = useSimulation();
 
   return (
     <div style={{ 
@@ -27,8 +28,11 @@ export default function OfficeSimulation() {
         if (agent.state === 'BREAK') stateEmoji = '🛋️';
         if (agent.state === 'WORKING') stateEmoji = '💻';
         if (agent.state === 'WAITING_FOR_HELP') stateEmoji = '❓';
+        if (agent.state === 'MEETING') stateEmoji = '💬';
 
         const currentTask = agent.taskQueue?.find(t => t.status === 'IN_PROGRESS');
+        // The last thing the model wrote, so the bubble shows the work as it happens
+        const writing = currentTask ? (live[currentTask.id] || '').replace(/\s+/g, ' ').trim().slice(-110) : '';
 
         return (
           <motion.div
@@ -91,8 +95,13 @@ export default function OfficeSimulation() {
                   overflow: 'hidden',
                   textOverflow: 'ellipsis'
                 }}>
-                  {currentTask.prompt}
+                  {taskTitle(currentTask)}
                 </div>
+                {writing && (
+                  <div style={{ marginTop: '4px', paddingTop: '4px', borderTop: '1px solid #e2e8f0', color: '#64748b', fontSize: '10px', textAlign: 'left', fontFamily: 'ui-monospace, monospace', overflowWrap: 'anywhere' }}>
+                    …{writing}
+                  </div>
+                )}
                 {/* Speech bubble pointer */}
                 <div style={{
                   position: 'absolute',

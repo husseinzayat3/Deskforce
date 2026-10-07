@@ -1,4 +1,4 @@
-import { Agent, AgentRole, TaskItem, TaskStatus } from './types';
+import { Agent, Role, TaskItem, TaskStatus } from './types';
 
 /**
  * Guardrails that keep agents productive and stop runaway token spend.
@@ -35,14 +35,20 @@ export const OFFICE_CONFIG = {
   MAX_FILES_IN_PROMPT: 80,
 };
 
-/** Lower number = more senior. Agents may only delegate to strictly lower-ranked roles. */
-export const ROLE_RANK: Record<AgentRole, number> = {
-  CEO: 0,
-  'Tech Lead': 1,
-  Designer: 2,
-  HR: 2,
-  'Junior Dev': 3,
-};
+/** The roles a new office starts with. They can be edited, removed and added to in the app. */
+export const DEFAULT_ROLES: Role[] = [
+  { name: 'CEO', rank: 0, instructions: 'You own the outcome for the client. Break the request into a clear plan, decide what to delegate, and make sure the pieces fit together.' },
+  { name: 'Tech Lead', rank: 1, instructions: 'You own the technical design. Decide the structure, set conventions the others follow, and do the hardest parts yourself.' },
+  { name: 'Designer', rank: 2, instructions: 'You own how it looks and reads: layout, visual style, wording of the interface. Deliver concrete files, not descriptions.' },
+  { name: 'HR', rank: 2, instructions: 'You own people-facing documents: guides, policies, onboarding material. Write plainly for the reader.' },
+  { name: 'QA', rank: 2, instructions: 'You find what is broken or missing. Read the project files critically, write tests and checklists, and fix defects you find rather than only reporting them.' },
+  { name: 'DevOps', rank: 2, instructions: 'You own how the project is built, configured and shipped: configuration files, containers, CI definitions, deployment notes.' },
+  { name: 'Copywriter', rank: 3, instructions: 'You write the words: product copy, README text, announcements. Match the tone of the project and keep it concise.' },
+  { name: 'Junior Dev', rank: 3, instructions: 'You implement well-scoped pieces exactly as specified, in complete working files.' },
+];
+
+/** Seniority of a role by name. Roles that no longer exist rank last, so they can never delegate upwards. */
+export const rankOf = (roles: Role[], name: string) => roles.find(r => r.name === name)?.rank ?? Number.MAX_SAFE_INTEGER;
 
 export interface TaskRef {
   task: TaskItem;
@@ -140,6 +146,15 @@ export const projectOf = (root: TaskItem) => root.project || legacyProjectSlug(r
 /** Statuses after which a task will not change any more. */
 export const FINISHED_STATUSES = new Set<TaskStatus>(['COMPLETED', 'FAILED', 'CANCELLED']);
 
+/** Local midnight on the first day of the month that `time` falls in. */
+export const startOfMonth = (time: number) => {
+  const date = new Date(time);
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
+};
+
+/** When a task's cost was incurred: when it finished, or for older records when it was created. */
+export const spentAt = (task: TaskItem) => task.completedAt || task.timestamp;
+
 /**
  * List prices in USD per 1 million tokens, used to estimate what each task cost.
  * Update these when a provider changes its prices, and add any model you switch to.
@@ -149,6 +164,21 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
   'gpt-4o': { input: 2.5, output: 10 },
   'grok-3': { input: 3, output: 15 },
   'grok-3-mini': { input: 0.3, output: 0.5 },
+  'claude-fable-5-1': { input: 10, output: 50 },
+  'claude-opus-5-5': { input: 4, output: 20 },
+  'claude-sonnet-5-5': { input: 2, output: 10 },
+  'claude-haiku-4-5': { input: 1, output: 5 },
+  'gemini-2.5-pro': { input: 1.25, output: 10 },
+  'gemini-2.5-flash': { input: 0.3, output: 2.5 },
+};
+
+/** Models offered in the hiring form. Any other model name can be typed in. */
+export const MODEL_SUGGESTIONS: Record<string, string[]> = {
+  OpenAI: ['gpt-4o-mini', 'gpt-4o'],
+  Grok: ['grok-3', 'grok-3-mini'],
+  Anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5', 'claude-fable-5-1'],
+  Gemini: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+  Ollama: ['llama3'],
 };
 
 /** Estimated cost in USD, or undefined when the model has no known price. Local and mock models are free. */
@@ -192,6 +222,7 @@ export const titleFromDescription = (description: string) => {
 /** What a task is called on the board and in reports. */
 export const taskTitle = (task: TaskItem) => {
   if (task.kind === 'REVIEW') return 'Final review of the project';
+  if (task.kind === 'MEETING') return task.title || 'Meeting';
   return task.title || cleanPrompt(task.prompt).split('\n')[0].trim();
 };
 

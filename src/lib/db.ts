@@ -1,9 +1,9 @@
 import Database from 'better-sqlite3';
-import path from 'path';
 import fs from 'fs';
+import { DATA_DIR, DB_PATH } from './server/paths';
 
-const workspaceDir = path.join(process.cwd(), 'workspace');
-const dbPath = path.join(workspaceDir, 'office_state.db');
+const workspaceDir = DATA_DIR;
+const dbPath = DB_PATH;
 
 // Non-destructive migrations for existing databases
 const TASK_MIGRATIONS: Record<string, string> = {
@@ -21,6 +21,11 @@ const TASK_MIGRATIONS: Record<string, string> = {
   title: 'TEXT',
   feedback: 'TEXT',
   budget: 'REAL', // USD, set on root tasks
+  commitId: 'TEXT', // git commit with the files the task wrote
+  question: 'TEXT',
+  clarifications: 'TEXT',
+  participants: 'TEXT', // JSON array of agent ids (meetings)
+  blockedBy: 'TEXT',
 };
 
 const open = () => {
@@ -28,6 +33,8 @@ const open = () => {
   fs.mkdirSync(workspaceDir, { recursive: true });
 
   const db = new Database(dbPath);
+  // The database also holds API keys saved from the settings screen: owner-only
+  fs.chmodSync(dbPath, 0o600);
 
   // Initialize tables
   db.exec(`
@@ -68,6 +75,27 @@ const open = () => {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS roles (
+      name TEXT PRIMARY KEY,
+      rank INTEGER NOT NULL,
+      instructions TEXT NOT NULL DEFAULT ''
+    );
+
+    -- Saved tasks, optionally run on a schedule
+    CREATE TABLE IF NOT EXISTS templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      agentId TEXT,
+      budget REAL,
+      project TEXT,
+      schedule TEXT NOT NULL DEFAULT 'none',
+      weekday INTEGER NOT NULL DEFAULT 1,
+      minuteOfDay INTEGER NOT NULL DEFAULT 540,
+      nextRunAt INTEGER,
+      lastRunAt INTEGER
+    );
+
     -- Notifications from the engine, shown as toasts in the browser
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +103,9 @@ const open = () => {
       at INTEGER NOT NULL
     );
   `);
+
+  const agentColumns = db.prepare('PRAGMA table_info(agents)').all() as { name: string }[];
+  if (!agentColumns.some(c => c.name === 'model')) db.exec('ALTER TABLE agents ADD COLUMN model TEXT');
 
   const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
   for (const [column, type] of Object.entries(TASK_MIGRATIONS)) {

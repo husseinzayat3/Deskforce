@@ -4,28 +4,30 @@ A virtual office where AI agents work as a team. Hire employees, give the CEO a 
 
 ## Features
 
-- **Visual office map** — each agent is a clickable avatar on the floorplan (click to open its tasks), with a speech bubble showing what it is working on and trips to the coffee machine, break room and toilet.
-- **Roles and delegation** — CEO, Tech Lead, Designer, HR and Junior Dev. Agents hand work down the hierarchy, and every sub-task is linked to the task that created it.
-- **Task board** — a nested view of each task and its sub-tasks, with progress, tokens used, estimated cost, the agent's summary and the files it wrote.
+- **Visual office map** — each agent is a clickable avatar on the floorplan (click to open its tasks). The speech bubble shows what the model is writing as it writes it, and agents walk to the meeting room, the coffee machine and the break room.
+- **Runs on the server** — tasks are executed by the server, not the browser tab. Close the page and the work carries on; after a restart, interrupted tasks go back in the queue.
+- **Roles you define** — an office starts with eight roles (CEO, Tech Lead, Designer, QA, DevOps and more). Edit their instructions and seniority or add your own; an agent can only delegate to more junior roles.
+- **A model per employee** — OpenAI, Anthropic (Claude), Google Gemini, Grok (xAI) or a local model through Ollama, and the exact model for each hire: a strong one for managers and reviewers, a cheap one for juniors.
 - **Shared context** — every agent sees the original request, its manager's plan, what colleagues already finished and the current project files, so work is built on rather than overwritten.
-- **Final review and report** — when all delegated work is done, the task owner checks the whole project and fixes gaps. Each task you assign then gets a report, and its output can be downloaded as a `.zip`.
-- **Spending guardrails** — a budget in dollars per task (set when you assign it), limits on delegation depth and sub-tasks, plus duplicate detection. Anything over a limit waits for your approval instead of running.
-- **Keep working on a task** — continue a finished project with a new request, send a finished task back with feedback, or retry a failed one. A file the model forgot to close is requested again automatically.
-- **Real output** — agents write files into a per-task project folder under `workspace/projects/`, and can scaffold a Flutter or Node project to work in.
-- **Multiple AI providers** — OpenAI, Grok (xAI), or a local model through Ollama. Each employee can use a different one.
-- **Runs on the server** — tasks are executed by the server, not the browser tab. Close the page and the work carries on; reopen it, or open it in several tabs, and you see the current state. After a server restart, interrupted tasks go back in the queue.
-- **Persistent state** — agents, tasks and history are stored in a local SQLite database (`workspace/office_state.db`).
+- **Meetings** — when two agents are asked to change the same file, they meet first, agree who does what, and then work one after the other.
+- **Questions** — an agent that cannot do a task without information only you have asks, and carries on when you answer.
+- **Final review and report** — when all delegated work is done, the task owner checks the whole project and fixes gaps. Each task you assign then gets a report.
+- **Files, history and undo** — browse a project's files in the app. Every task is a git commit in the agent's name: see exactly what it changed and undo it with one click.
+- **Preview** — projects with a web page (`index.html`) open in a preview, served from their own local address.
+- **Task board** — a nested view of each task and its sub-tasks, with progress, tokens, estimated cost, live output, and buttons to retry, request changes or continue the project.
+- **Costs** — spending per day, per employee and per model, a budget per task, and a monthly cap that stops new work when it is reached.
+- **Templates and schedules** — save a task to run again with a click, or every day or week at a set time.
+- **Real output** — agents write every file of the project themselves, into a per-task folder under `workspace/projects/`. Nothing is installed or executed on your machine.
+- **Desktop app** — one command packages the whole thing as a macOS app, with a settings screen for your API keys.
 
 ## Getting started
 
 ### 1. Prerequisites
 
-- Node.js 18.17 or newer
+- Node.js 20 or newer (`nvm use` picks it up from `.nvmrc`)
 - At least one AI provider:
-  - an OpenAI API key, or
-  - an xAI (Grok) API key, or
+  - an API key for OpenAI, Anthropic, Google Gemini or xAI (Grok), or
   - [Ollama](https://ollama.com) running locally with the `llama3` model (`ollama pull llama3`) — set `OLLAMA_MODEL` to use a different one
-- Optional: the Flutter SDK, if you want agents to scaffold Flutter projects
 
 ### 2. Install
 
@@ -45,6 +47,8 @@ cp .env.example .env.local
 
 `.env.local` is ignored by git. A provider without a key returns mock responses, so you can explore the interface before adding one.
 
+You can also enter keys, models and the Ollama address in the app itself: the gear button opens the settings. Values saved there are kept in the office database and take precedence over `.env.local`.
+
 ### 4. Run
 
 ```bash
@@ -62,7 +66,7 @@ The office engine (`src/lib/server/engine.ts`) starts with the server and checks
 | `[PROJECT: short-name]` | Names the project folder (first response of a new task) |
 | `[ASSIGN: colleague_id \| Short title] task [/ASSIGN]` | Delegates a sub-task to a more junior colleague |
 | `[FILE: path/name.ext] contents [/FILE]` | Writes a file into the project folder |
-| `[SCAFFOLD: flutter]` or `[SCAFFOLD: node]` | Initialises a project in the folder |
+| `[QUESTION] text [/QUESTION]` | Pauses the task and asks you |
 | `[SUMMARY] text [/SUMMARY]` | Records a summary for you to review |
 
 The guardrail limits and the per-model prices used for cost estimates live in `src/lib/officeConfig.ts`. Costs are estimates from list prices; local Ollama models count as free.
@@ -72,7 +76,20 @@ The guardrail limits and the per-model prices used for cost estimates live in `s
 | Frontend | Next.js (React), `framer-motion` |
 | Backend | Next.js API routes, plus an in-process engine that runs the tasks |
 | Database | `better-sqlite3` |
-| AI | OpenAI SDK (OpenAI and Grok), Ollama HTTP API |
+| AI | OpenAI SDK (OpenAI and Grok), Anthropic SDK, Gemini and Ollama HTTP APIs, all streamed |
+| History | `isomorphic-git` (no `git` program needed) |
+
+## Desktop app (macOS)
+
+```bash
+npm run dist:mac
+```
+
+This builds `dist-desktop/My Office-<version>-<arch>.dmg`. Add `-- --dir` to build only the `.app`, which is quicker when you just want to try it.
+
+The app contains the server and the engine, and listens on this computer only. Its data lives in `~/Library/Application Support/My Office/` (the database, a `projects` folder, and `server.log`); "Open folder" on a task shows the project in Finder. There is no `.env.local` in the app: enter your API keys in its settings. Closing the window keeps the agents working; quit the app to stop them.
+
+The app is not signed with an Apple Developer ID. It runs on the Mac that built it; on another Mac, open it the first time with right-click → Open.
 
 ## Docker
 
@@ -88,6 +105,8 @@ Mount `/app/workspace` as shown to keep the generated files and the database. To
 This app is built to run on your own machine. The API routes have no authentication: anyone who can reach the server can hire employees and assign tasks, which spends your API credits and writes files into `workspace/`. Do not expose it to the internet without adding authentication first.
 
 The browser cannot call a model or write a file directly; it can only queue tasks. Files are written by the engine, and only inside the task's project folder.
+
+Requests that change anything are accepted only from the office page itself, so another website open in your browser cannot assign tasks or change settings. A project preview is served from a separate local address for the same reason: the page a model wrote cannot reach the office.
 
 ## Custom offices
 

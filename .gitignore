@@ -11,6 +11,11 @@ node_modules/
 
 # next.js
 /.next/
+/.next-desktop/
+
+# desktop app
+/dist-desktop/
+/build-desktop/
 /out/
 
 # production

@@ -2,23 +2,38 @@
 
 import React, { useState } from 'react';
 import { useSimulation } from '../lib/SimulationContext';
-import { AgentRole, APIProvider, Agent } from '../lib/types';
-import { UserPlus, Briefcase, Zap, CheckCircle2, ChevronRight, MessageSquare, Terminal, Trash2, Pause, Play, SquareX, ListTree } from 'lucide-react';
+import { AgentRole, APIProvider, Agent, TaskItem } from '../lib/types';
+import { UserPlus, Briefcase, Zap, CheckCircle2, ChevronRight, MessageSquare, Terminal, Trash2, Pause, Play, SquareX, ListTree, Settings, Users, Wallet, BookmarkCheck } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import TaskTree from './TaskTree';
-import { OFFICE_CONFIG, cleanPrompt, formatUsage } from '../lib/officeConfig';
+import SettingsPanel from './SettingsPanel';
+import RolesPanel from './RolesPanel';
+import CostsPanel from './CostsPanel';
+import TemplatesPanel from './TemplatesPanel';
+import { OFFICE_CONFIG, MODEL_SUGGESTIONS, cleanPrompt, formatUsage, projectOf, taskTitle } from '../lib/officeConfig';
+import { TemplateDraft } from '../lib/SimulationContext';
 
 export default function Dashboard() {
-  const { agents, paused, notifications, notify, focus, addAgent, removeAgent, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused } = useSimulation();
+  const {
+    agents, paused, projectsDir, live, roles, templates, month, notifications, notify, focus,
+    addAgent, removeAgent, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused,
+    answerTask, saveRole, removeRole, saveTemplate, removeTemplate, runTemplate, setMonthlyCap,
+  } = useSimulation();
 
   const [name, setName] = useState('');
   const [role, setRole] = useState<AgentRole>('Junior Dev');
   const [api, setApi] = useState<APIProvider>('Ollama');
+  // Empty = the provider's default model from the settings
+  const [model, setModel] = useState('');
+  const [rolesOpen, setRolesOpen] = useState(false);
+  // A template being created from a task on the board
+  const [templateDraft, setTemplateDraft] = useState<TemplateDraft | null>(null);
   const [avatar, setAvatar] = useState('/avatars/robot.png');
 
   // State for inline task assignment
   const [activeTaskAgent, setActiveTaskAgent] = useState<string | null>(null);
   const [taskPrompt, setTaskPrompt] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Optional spending limit in USD for the task being assigned; empty = the default
   const [taskBudget, setTaskBudget] = useState('');
 
@@ -26,7 +41,10 @@ export default function Dashboard() {
   const [expandedAgentId, setExpandedAgentId] = useState<string | null>(null);
 
   // Right-panel view: employee roster or hierarchical task board
-  const [panelView, setPanelView] = useState<'roster' | 'tasks'>('roster');
+  const [panelView, setPanelView] = useState<'roster' | 'tasks' | 'costs' | 'templates'>('roster');
+  const questionCount = agents.reduce((sum, a) => sum + a.taskQueue.filter(t => t.status === 'WAITING_FOR_INPUT').length, 0);
+  // The role picked in the form, or the most junior one while the list loads or after it changed
+  const hireRole = roles.some(r => r.name === role) ? role : roles[roles.length - 1]?.name || '';
   const activeTaskCount = agents.reduce(
     (sum, a) => sum + (a.taskQueue || []).filter(t => t.status === 'PENDING' || t.status === 'IN_PROGRESS').length,
     0
@@ -34,9 +52,14 @@ export default function Dashboard() {
 
   const handleAddEmployee = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
-    addAgent({ name, role, api, avatar });
+    if (!name.trim() || !hireRole) return;
+    addAgent({ name, role: hireRole, api, avatar, model: model.trim() || undefined });
     setName('');
+  };
+
+  const startTemplateFrom = (agent: Agent, task: TaskItem) => {
+    setTemplateDraft({ name: taskTitle(task).slice(0, 60), prompt: cleanPrompt(task.prompt), agentId: agent.id, budget: task.budget, project: task.project ? projectOf(task) : undefined, schedule: 'none', weekday: 1, minuteOfDay: 9 * 60 });
+    setPanelView('templates');
   };
 
   // Tasks are queued on the server, which runs them whether or not this page stays open
@@ -72,6 +95,9 @@ return (
       ))}
     </div>
 
+    {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} onSaved={notify} />}
+    {rolesOpen && <RolesPanel roles={roles} agents={agents} onSave={saveRole} onRemove={removeRole} onClose={() => setRolesOpen(false)} />}
+
     <div className={styles.header}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         <div className={styles.iconBox}><Terminal size={20} color="#38bdf8" /></div>
@@ -92,6 +118,24 @@ return (
           style={{ background: '#ef4444', padding: '6px 12px', fontSize: '12px' }}
         >
           <SquareX size={14} /> Halt Simulation
+        </button>
+        <button
+          onClick={() => setRolesOpen(true)}
+          className={styles.button}
+          style={{ background: '#475569', padding: '6px 10px', fontSize: '12px' }}
+          title="Roles and their instructions"
+          aria-label="Roles and their instructions"
+        >
+          <Users size={14} />
+        </button>
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className={styles.button}
+          style={{ background: '#475569', padding: '6px 10px', fontSize: '12px' }}
+          title="AI provider settings"
+          aria-label="AI provider settings"
+        >
+          <Settings size={14} />
         </button>
       </div>
     </div>
@@ -121,19 +165,32 @@ return (
           ))}
         </div>
         <div className={styles.row}>
-          <select value={role} onChange={(e) => setRole(e.target.value as AgentRole)} className={styles.select}>
-            <option value="CEO">CEO</option>
-            <option value="Tech Lead">Tech Lead</option>
-            <option value="Junior Dev">Junior Dev</option>
-            <option value="Designer">Designer</option>
-            <option value="HR">HR</option>
+          <select aria-label="Role" value={hireRole} onChange={(e) => setRole(e.target.value)} className={styles.select}>
+            {roles.map(r => <option key={r.name} value={r.name}>{r.name}</option>)}
           </select>
-          <select value={api} onChange={(e) => setApi(e.target.value as APIProvider)} className={styles.select}>
-            <option value="OpenAI">OpenAI (GPT-4o mini)</option>
+          <select aria-label="AI provider" value={api} onChange={(e) => { setApi(e.target.value as APIProvider); setModel(''); }} className={styles.select}>
+            <option value="OpenAI">OpenAI</option>
+            <option value="Anthropic">Anthropic (Claude)</option>
+            <option value="Gemini">Google Gemini</option>
             <option value="Grok">Grok (xAI)</option>
             <option value="Ollama">Ollama (Local)</option>
           </select>
         </div>
+        <input
+          type="text"
+          list="model-suggestions"
+          aria-label="Model"
+          title="The model this employee uses. Leave empty for the provider's default from the settings."
+          placeholder="Model (empty = provider default)"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          className={styles.input}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <datalist id="model-suggestions">
+          {(MODEL_SUGGESTIONS[api] || []).map(m => <option key={m} value={m} />)}
+        </datalist>
         <button type="submit" className={styles.button}>
           Hire Employee
         </button>
@@ -141,7 +198,7 @@ return (
     </div>
 
     <div className={styles.card} style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div className={styles.tabs} role="tablist">
+      <div className={styles.tabs} role="tablist" style={{ flexWrap: 'wrap' }}>
         <button
           id="tab-roster"
           role="tab"
@@ -160,15 +217,47 @@ return (
         >
           <ListTree size={14} /> Task Board
           {activeTaskCount > 0 && <span className={styles.tabCount}>{activeTaskCount}</span>}
+          {questionCount > 0 && <span className={styles.tabCount} style={{ background: '#f59e0b' }} title="Questions waiting for your answer">?{questionCount}</span>}
+        </button>
+        <button
+          id="tab-costs"
+          role="tab"
+          aria-selected={panelView === 'costs'}
+          className={`${styles.tab} ${panelView === 'costs' ? styles.tabActive : ''}`}
+          onClick={() => setPanelView('costs')}
+        >
+          <Wallet size={14} /> Costs
+        </button>
+        <button
+          id="tab-templates"
+          role="tab"
+          aria-selected={panelView === 'templates'}
+          className={`${styles.tab} ${panelView === 'templates' ? styles.tabActive : ''}`}
+          onClick={() => setPanelView('templates')}
+        >
+          <BookmarkCheck size={14} /> Templates
         </button>
       </div>
 
-      {panelView === 'tasks' ? (
+      {panelView === 'costs' ? (
+        <div className={styles.agentList}>
+          <CostsPanel agents={agents} month={month} onSetCap={setMonthlyCap} />
+        </div>
+      ) : panelView === 'templates' ? (
+        <div className={styles.agentList}>
+          <TemplatesPanel templates={templates} agents={agents} draft={templateDraft} onDraftDone={() => setTemplateDraft(null)} onSave={saveTemplate} onRemove={removeTemplate} onRun={runTemplate} />
+        </div>
+      ) : panelView === 'tasks' ? (
         <div className={styles.agentList}>
           <TaskTree 
             agents={agents} 
             onCancel={(_agentId, taskId) => cancelTask(taskId)}
             onApprove={(_agentId, taskId) => approveTask(taskId)}
+            projectsDir={projectsDir}
+            live={live}
+            notify={notify}
+            onAnswer={answerTask}
+            onSaveTemplate={startTemplateFrom}
             onRetry={retryTask}
             onRevise={reviseTask}
             onContinue={(agentId, project, prompt, budget) => assignTask(agentId, prompt, { project, budget })}
@@ -193,7 +282,7 @@ return (
                   <span className={styles.badge}>{agent.role}</span>
                 </div>
                 <div className={styles.agentDetails}>
-                  <Zap size={12} style={{ marginRight: 4 }} />{agent.api}
+                  <Zap size={12} style={{ marginRight: 4 }} />{agent.api}{agent.model ? ` · ${agent.model}` : ''}
                   <span className={styles.dot}>•</span>
                   <span className={styles.statusText} data-status={agent.state}>{agent.state}</span>
                 </div>

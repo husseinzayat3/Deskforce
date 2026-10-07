@@ -1,9 +1,18 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Agent, AgentState } from './types';
+import { Agent, AgentState, Role, Template } from './types';
 
-type NewAgent = Pick<Agent, 'name' | 'role' | 'api' | 'avatar'>;
+type NewAgent = Pick<Agent, 'name' | 'role' | 'api' | 'avatar' | 'model'>;
+
+/** This calendar month's estimated spending against the cap (0 = no cap). */
+export interface MonthStatus {
+  cap: number;
+  spent: number;
+  reached: boolean;
+}
+
+export type TemplateDraft = Omit<Template, 'id' | 'nextRunAt' | 'lastRunAt'> & { id?: string };
 
 interface Notification {
   id: string;
@@ -15,6 +24,13 @@ interface SimulationContextType {
   agents: Agent[];
   /** True while the server is not handing out new tasks. */
   paused: boolean;
+  /** Folder on the server's disk that holds one sub-folder per project. */
+  projectsDir: string;
+  /** Task id → the end of what its model has written so far, for tasks that are running. */
+  live: Record<string, string>;
+  roles: Role[];
+  templates: Template[];
+  month: MonthStatus;
   notifications: Notification[];
   notify: (message: string) => void;
   /** Employee last clicked on the map. `at` changes on every click, so clicking the same one again still counts. */
@@ -32,6 +48,16 @@ interface SimulationContextType {
   approveTask: (taskId: string) => void;
   haltAll: () => void;
   setPaused: (paused: boolean) => void;
+  /** Answer the question a task is waiting on. */
+  answerTask: (taskId: string, text: string) => void;
+  saveRole: (role: Role) => void;
+  removeRole: (name: string) => void;
+  saveTemplate: (template: TemplateDraft) => void;
+  removeTemplate: (id: string) => void;
+  /** Assign a saved task now, to its own employee or to the one given. */
+  runTemplate: (id: string, agentId?: string) => void;
+  /** Monthly spending cap in USD; 0 removes it. */
+  setMonthlyCap: (amount: number) => void;
 }
 
 const SimulationContext = createContext<SimulationContextType | undefined>(undefined);
@@ -45,6 +71,9 @@ export const POI = {
     'Designer': [{ x: 800, y: 350 }, { x: 850, y: 350 }],
     'HR': [{ x: 800, y: 400 }]
   },
+  /** Desks for roles that have no area of their own on the floorplan. */
+  SHARED_DESKS: [{ x: 600, y: 400 }, { x: 680, y: 400 }, { x: 600, y: 550 }, { x: 680, y: 550 }, { x: 600, y: 700 }, { x: 680, y: 700 }],
+  MEETING: { x: 455, y: 260 },
   COFFEE: { x: 850, y: 450 },
   BREAK_ROOM: { x: 800, y: 600 },
   TOILET: { x: 800, y: 200 },
@@ -76,10 +105,14 @@ interface Visual {
 
 const jitter = (range: number) => Math.random() * range - range / 2;
 
+const ROLE_DESKS: Record<string, { x: number; y: number }[]> = POI.DESKS;
+
 const deskFor = (agent: Agent, all: Agent[]) => {
-  const desks = POI.DESKS[agent.role] || POI.DESKS['Junior Dev'];
-  const index = Math.max(0, all.filter(a => a.role === agent.role).findIndex(a => a.id === agent.id));
-  return desks[index % desks.length];
+  const own = ROLE_DESKS[agent.role];
+  // Roles without their own area sit together, in hiring order
+  const group = own ? all.filter(a => a.role === agent.role) : all.filter(a => !ROLE_DESKS[a.role]);
+  const desks = own || POI.SHARED_DESKS;
+  return desks[Math.max(0, group.findIndex(a => a.id === agent.id)) % desks.length];
 };
 
 const at = (visual: Visual, state: AgentState, spot: { x: number; y: number }): Visual =>
@@ -103,6 +136,10 @@ const stepVisuals = (prev: Record<string, Visual>, agents: Agent[], now: number,
   const next: Record<string, Visual> = {};
   let changed = Object.keys(prev).length !== agents.length;
 
+  // Two things the server knows that show on the map: who is in a meeting, and who waits for an answer
+  const meeting = new Set(agents.flatMap(a => a.taskQueue).filter(t => t.kind === 'MEETING' && t.status === 'IN_PROGRESS').flatMap(t => t.participants || []));
+  const waiting = new Set(agents.filter(a => a.taskQueue.some(t => t.status === 'WAITING_FOR_INPUT')).map(a => a.id));
+
   for (const agent of agents) {
     const desk = deskFor(agent, agents);
     const before = prev[agent.id];
@@ -111,10 +148,18 @@ const stepVisuals = (prev: Record<string, Visual>, agents: Agent[], now: number,
     if (!visual) {
       const spot = seated ? desk : ENTRANCE;
       visual = { state: 'IDLE', x: spot.x, y: spot.y, targetX: desk.x, targetY: desk.y, breaksTaken: 0, idleSince: now };
+    } else if (meeting.has(agent.id)) {
+      if (visual.state !== 'MEETING') {
+        visual = at(visual, 'MEETING', { x: POI.MEETING.x + jitter(90), y: POI.MEETING.y + jitter(40) });
+      }
     } else if (agent.state === 'WORKING') {
       if (visual.state !== 'WORKING' || visual.x !== desk.x || visual.y !== desk.y) {
         visual = { ...at(visual, 'WORKING', desk), breaksTaken: 0 };
       }
+    } else if (waiting.has(agent.id)) {
+      if (visual.state !== 'WAITING_FOR_HELP') visual = at(visual, 'WAITING_FOR_HELP', desk);
+    } else if (visual.state === 'MEETING' || visual.state === 'WAITING_FOR_HELP') {
+      visual = { ...at(visual, 'IDLE', desk), idleSince: now };
     } else if (visual.state === 'WORKING') {
       // Just finished: straight on to the next task, or a break once the queue is empty
       visual = agent.taskQueue.some(t => t.status === 'PENDING')
@@ -144,6 +189,11 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [serverAgents, setServerAgents] = useState<Agent[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [paused, setPausedState] = useState(false);
+  const [live, setLive] = useState<Record<string, string>>({});
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [month, setMonth] = useState<MonthStatus>({ cap: 0, spent: 0, reached: false });
+  const [projectsDir, setProjectsDir] = useState('workspace/projects');
   const [visuals, setVisuals] = useState<Record<string, Visual>>({});
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [focus, setFocus] = useState<{ agentId: string; at: number } | null>(null);
@@ -178,6 +228,12 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (Array.isArray(data.agents)) setServerAgents(data.agents);
     if (typeof data.version === 'string') versionRef.current = data.version;
     setPausedState(Boolean(data.paused));
+    if (Array.isArray(data.roles)) setRoles(data.roles);
+    if (Array.isArray(data.templates)) setTemplates(data.templates);
+    if (data.month) setMonth(data.month);
+    // Unchanged while nothing is running, so idle polls do not re-render
+    setLive(prev => (Object.keys(prev).length === 0 && Object.keys(data.live || {}).length === 0 ? prev : data.live || {}));
+    if (typeof data.projectsDir === 'string') setProjectsDir(data.projectsDir);
     setLoaded(true);
     return true;
   }, []);
@@ -237,6 +293,13 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const approveTask = useCallback((taskId: string) => { send({ action: 'approve', taskId }); }, [send]);
   const haltAll = useCallback(() => { send({ action: 'halt' }); }, [send]);
   const setPaused = useCallback((value: boolean) => { send({ action: 'pause', paused: value }); }, [send]);
+  const answerTask = useCallback((taskId: string, text: string) => { send({ action: 'answer', taskId, text }); }, [send]);
+  const saveRole = useCallback((role: Role) => { send({ action: 'role', ...role }); }, [send]);
+  const removeRole = useCallback((name: string) => { send({ action: 'removeRole', name }); }, [send]);
+  const saveTemplate = useCallback((template: TemplateDraft) => { send({ action: 'template', ...template }); }, [send]);
+  const removeTemplate = useCallback((id: string) => { send({ action: 'removeTemplate', id }); }, [send]);
+  const runTemplate = useCallback((id: string, agentId?: string) => { send({ action: 'runTemplate', id, agentId }); }, [send]);
+  const setMonthlyCap = useCallback((amount: number) => { send({ action: 'cap', amount }); }, [send]);
 
   // Map: react at once to what the server reports…
   useEffect(() => {
@@ -263,7 +326,7 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }), [serverAgents, visuals]);
 
   return (
-    <SimulationContext.Provider value={{ agents, paused, notifications, notify, focus, focusAgent, addAgent, removeAgent, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused }}>
+    <SimulationContext.Provider value={{ agents, paused, projectsDir, live, roles, templates, month, notifications, notify, focus, focusAgent, addAgent, removeAgent, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused, answerTask, saveRole, removeRole, saveTemplate, removeTemplate, runTemplate, setMonthlyCap }}>
       {children}
     </SimulationContext.Provider>
   );
