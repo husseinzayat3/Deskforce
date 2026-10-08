@@ -15,8 +15,15 @@ export const SETTINGS = {
   geminiModel: { env: 'GEMINI_MODEL', secret: false, fallback: 'gemini-2.5-flash' },
   ollamaUrl: { env: 'OLLAMA_URL', secret: false, fallback: 'http://127.0.0.1:11434' },
   ollamaModel: { env: 'OLLAMA_MODEL', secret: false, fallback: 'llama3' },
+  /** Slack: the app-level token (xapp-…) that opens the connection, and the bot token (xoxb-…) that posts replies. */
+  slackAppToken: { env: 'SLACK_APP_TOKEN', secret: true, fallback: '' },
+  slackBotToken: { env: 'SLACK_BOT_TOKEN', secret: true, fallback: '' },
+  /** Slack user IDs allowed to talk to the office, separated by commas. Nobody else is answered. */
+  slackUsers: { env: 'SLACK_ALLOWED_USERS', secret: false, fallback: '' },
   /** 'on' lets agents search the web and read pages. */
   webAccess: { env: 'OFFICE_WEB_ACCESS', secret: false, fallback: 'on' },
+  /** 'on' makes new tasks start with a plan the user approves. Each task can still be assigned without one. */
+  planFirst: { env: 'OFFICE_PLAN_FIRST', secret: false, fallback: 'on' },
   /** 'on' lets the office run a project's tests on this computer. Off unless the user turns it on. */
   allowChecks: { env: 'OFFICE_ALLOW_CHECKS', secret: false, fallback: 'off' },
 } as const;

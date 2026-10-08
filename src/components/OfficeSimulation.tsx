@@ -3,13 +3,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useSimulation } from '../lib/SimulationContext';
 import { motion } from 'framer-motion';
+import { LayoutGrid } from 'lucide-react';
 import { taskTitle } from '../lib/officeConfig';
-
-/** Side of the floorplan image in pixels; employee positions are in these units. */
-const MAP_SIZE = 1024;
+import { BUILT_IN_BACKGROUND, MAP_SIZE } from '../lib/layout';
+import LayoutEditor from './LayoutEditor';
 
 export default function OfficeSimulation() {
-  const { agents, live, focus, focusAgent } = useSimulation();
+  const { agents, live, focus, focusAgent, layout, saveLayout, roles, notify } = useSimulation();
+  const [editing, setEditing] = useState(false);
 
   // The floorplan is drawn at a fixed size and scaled to whatever room the page gives it
   const frame = useRef<HTMLDivElement>(null);
@@ -33,9 +34,31 @@ export default function OfficeSimulation() {
       transformOrigin: 'top left',
       backgroundColor: '#e2e8f0'
     }}>
-      <img src="/office_bg.png" alt="Office Floorplan" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+      <img src={layout.background || BUILT_IN_BACKGROUND} alt="Office floorplan" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+
+      {editing && (
+        <LayoutEditor
+          layout={layout}
+          roles={roles}
+          scale={scale}
+          notify={notify}
+          onCancel={() => setEditing(false)}
+          onSave={next => { saveLayout(next); setEditing(false); notify('Office layout saved'); }}
+        />
+      )}
+
+      {!editing && (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          title="Move desks and rooms, or use your own floorplan"
+          style={{ position: 'absolute', right: 16, bottom: 16, zIndex: 30, display: 'inline-flex', alignItems: 'center', gap: 6, height: 34, padding: '0 12px', border: 'none', borderRadius: 8, background: 'rgba(15, 23, 42, 0.8)', color: '#fff', font: 'inherit', fontSize: 13, fontWeight: 600, cursor: 'pointer', transform: `scale(${1 / scale})`, transformOrigin: 'bottom right' }}
+        >
+          <LayoutGrid size={14} /> Arrange office
+        </button>
+      )}
       
-      {agents.map(agent => {
+      {!editing && agents.map(agent => {
 
         let stateEmoji = '';
         if (agent.state === 'COFFEE') stateEmoji = '☕';

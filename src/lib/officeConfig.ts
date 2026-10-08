@@ -15,6 +15,15 @@ export const OFFICE_CONFIG = {
   MAX_TASK_BUDGET_USD: 100,
   /** Earlier requests on the same project that a follow-up task is told about. */
   MAX_HISTORY_ITEMS: 5,
+  /** Times a manager is shown what its team delivered and may delegate again. 0 turns follow-ups off. */
+  FOLLOWUP_ROUNDS: 1,
+  /** Questions one task may put to the manager who assigned it. */
+  MAX_MANAGER_QUESTIONS: 3,
+  /** Notes for future projects one task may save. */
+  MAX_NOTES_PER_TASK: 2,
+  /** How much of the company handbook and of the saved notes is given to each agent. */
+  HANDBOOK_CHARS: 6000,
+  NOTES_CHARS: 2500,
   /** Files with a missing closing tag that the model is asked to send again, per response. */
   MAX_FILE_REPAIRS: 3,
   /** How much of a manager's plan is passed down to the people it delegates to. */
@@ -143,6 +152,16 @@ export const legacyProjectSlug = (root: TaskItem) => {
 /** Project folder of a task tree. Older trees have no stored name and fall back to the old scheme. */
 export const projectOf = (root: TaskItem) => root.project || legacyProjectSlug(root);
 
+/**
+ * How deep a task sits in the delegation chain. A follow-up stands in for the task it follows
+ * up on, so it does not count as a level of its own.
+ */
+export const delegationDepth = (taskId: string, index: Map<string, TaskRef>) =>
+  getAncestors(taskId, index).filter(ref => ref.task.kind !== 'FOLLOWUP').length - (index.get(taskId)?.task.kind === 'FOLLOWUP' ? 1 : 0);
+
+/** Rough size of a planned step, in tokens. Tool use resends the conversation, so even small steps add up. */
+export const STEP_TOKENS: Record<string, number> = { S: 8000, M: 25000, L: 60000 };
+
 /** Statuses after which a task will not change any more. */
 export const FINISHED_STATUSES = new Set<TaskStatus>(['COMPLETED', 'FAILED', 'CANCELLED']);
 
@@ -194,12 +213,30 @@ export const priceOf = (model: string) => {
   return base ? MODEL_PRICING[base] : undefined;
 };
 
-/** Estimated cost in USD, or undefined when the model has no known price. Local and mock models are free. */
-export const estimateCost = (provider: string, model: string, inputTokens: number, outputTokens: number): number | undefined => {
+/**
+ * What input read from a provider's cache costs, as a share of the normal input price.
+ * From the providers' price lists; adjust here when they change.
+ */
+const cacheReadFactor = (provider: string, model: string) => {
+  if (provider === 'Anthropic') return /^claude-(fable|mythos)-5-1/.test(model) ? 0.025 : /^claude-opus-5-5/.test(model) ? 0.05 : 0.1;
+  if (provider === 'OpenAI') return 0.5;
+  if (provider === 'Grok' || provider === 'Gemini') return 0.25;
+  return 1;
+};
+
+/** Claude charges a little extra for input it writes to the cache; the others do not. */
+const cacheWriteFactor = (provider: string) => (provider === 'Anthropic' ? 1.25 : 1);
+
+/**
+ * Estimated cost in USD, or undefined when the model has no known price. Local and mock models are free.
+ * `inputTokens` is the input billed in full; input that went through the provider's cache is given apart.
+ */
+export const estimateCost = (provider: string, model: string, inputTokens: number, outputTokens: number, cache: { read?: number; write?: number } = {}): number | undefined => {
   if (provider === 'Ollama' || model === 'mock') return 0;
   const price = priceOf(model);
   if (!price) return undefined;
-  return (inputTokens * price.input + outputTokens * price.output) / 1_000_000;
+  const input = inputTokens + (cache.read || 0) * cacheReadFactor(provider, model) + (cache.write || 0) * cacheWriteFactor(provider);
+  return (input * price.input + outputTokens * price.output) / 1_000_000;
 };
 
 export const formatCost = (cost: number | undefined) => {
@@ -236,6 +273,7 @@ export const titleFromDescription = (description: string) => {
 export const taskTitle = (task: TaskItem) => {
   if (task.kind === 'REVIEW') return task.title || 'Final review of the project';
   if (task.kind === 'MEETING') return task.title || 'Meeting';
+  if (task.kind === 'FOLLOWUP') return task.title || "Follow-up on the team's work";
   return task.title || cleanPrompt(task.prompt).split('\n')[0].trim();
 };
 

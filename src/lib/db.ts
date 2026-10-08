@@ -31,6 +31,18 @@ const TASK_MIGRATIONS: Record<string, string> = {
   checkRuns: 'INTEGER',
   checkPassed: 'INTEGER',
   checkOutput: 'TEXT',
+  needsPlan: 'INTEGER',
+  cachedTokens: 'INTEGER',
+  durationMs: 'INTEGER',
+  retries: 'INTEGER',
+  revisions: 'INTEGER',
+  compareId: 'TEXT',
+  apiOverride: 'TEXT',
+  modelOverride: 'TEXT',
+  plan: 'TEXT',
+  planApproved: 'INTEGER',
+  planEstimate: 'REAL',
+  planNote: 'TEXT',
 };
 
 const open = () => {
@@ -99,6 +111,24 @@ const open = () => {
       minuteOfDay INTEGER NOT NULL DEFAULT 540,
       nextRunAt INTEGER,
       lastRunAt INTEGER
+    );
+
+    -- Lessons agents wrote down for future projects
+    CREATE TABLE IF NOT EXISTS notes (
+      id TEXT PRIMARY KEY,
+      text TEXT NOT NULL,
+      author TEXT NOT NULL,
+      project TEXT,
+      at INTEGER NOT NULL
+    );
+
+    -- What was said in a chat with the office (from Slack, or the chat endpoint)
+    CREATE TABLE IF NOT EXISTS chat (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation TEXT NOT NULL,
+      role TEXT NOT NULL,
+      text TEXT NOT NULL,
+      at INTEGER NOT NULL
     );
 
     -- Notifications from the engine, shown as toasts in the browser

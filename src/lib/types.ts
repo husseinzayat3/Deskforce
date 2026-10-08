@@ -36,14 +36,16 @@ export interface Template {
  * AWAITING_APPROVAL: a delegation proposed by an agent that the super admin
  * must approve before it is executed (prevents runaway token spend).
  * WAITING_FOR_INPUT: the agent asked the user a question and will carry on once it is answered.
+ * PLAN_REVIEW: the agent proposed a plan and waits for the user to approve it before any work is done.
  */
-export type TaskStatus = 'AWAITING_APPROVAL' | 'WAITING_FOR_INPUT' | 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+export type TaskStatus = 'AWAITING_APPROVAL' | 'WAITING_FOR_INPUT' | 'PLAN_REVIEW' | 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
 /**
  * REVIEW: the automatic final check of a whole project, queued once all of its sub-tasks are done.
  * MEETING: a short exchange between employees who were asked to change the same file.
+ * FOLLOWUP: a manager looking at what came back from the people it delegated to, with one more chance to delegate.
  */
-export type TaskKind = 'REVIEW' | 'MEETING';
+export type TaskKind = 'REVIEW' | 'MEETING' | 'FOLLOWUP';
 
 export type ReviewStatus = 'PENDING_REVIEW' | 'APPROVED' | 'CHANGES_REQUESTED';
 
@@ -95,6 +97,28 @@ export interface TaskItem {
   participants?: string[];
   /** Task that has to finish before this one may start. */
   blockedBy?: string;
+  /** The user wants to approve a plan before the work starts. Only on tasks assigned by the user. */
+  needsPlan?: boolean;
+  /** The plan the agent proposed (or the user's edited version of it). */
+  plan?: string;
+  /** Set once the user approved the plan. */
+  planApproved?: boolean;
+  /** Rough estimate in USD of carrying out the plan. Missing when a model in it has no known price. */
+  planEstimate?: number;
+  /** What the user said when asking for a different plan. */
+  planNote?: string;
+  /** How many of `tokens` were input read from the provider's cache, at a fraction of the price. */
+  cachedTokens?: number;
+  /** Time the model spent working on the task, over all attempts, in milliseconds. */
+  durationMs?: number;
+  /** Times the task was retried after failing, and times the user sent it back with feedback. */
+  retries?: number;
+  revisions?: number;
+  /** Set on the tasks of one model comparison: the same request, each run on a different model. */
+  compareId?: string;
+  /** Provider and model a comparison task runs on, instead of the employee's own. */
+  apiOverride?: APIProvider;
+  modelOverride?: string;
   /** Hidden from the task board. Only set on tasks assigned by the user. */
   archived?: boolean;
   /** Files the user gave with the task, as paths inside the project. */
@@ -104,6 +128,16 @@ export interface TaskItem {
   checkPassed?: boolean;
   /** What the checks printed the last time they ran. */
   checkOutput?: string;
+}
+
+/** Something an agent wrote down for future projects. */
+export interface Note {
+  id: string;
+  text: string;
+  /** Who wrote it, and during which project. */
+  author: string;
+  project?: string;
+  at: number;
 }
 
 /** What a notification is about, so the important ones can be shown outside the page. */
@@ -122,6 +156,10 @@ export interface OfficeFile {
   version: 1;
   exportedAt: string;
   roles: Role[];
+  /** The company handbook every agent is given. */
+  handbook?: string;
+  /** Where the desks and rooms are. Uploaded pictures are not part of the file. */
+  layout?: { desks: { x: number; y: number; role?: string }[]; rooms: Record<string, { x: number; y: number }> };
   employees: { name: string; role: string; api: APIProvider; model?: string; avatar: string }[];
   /** `employee` is the name of the employee the template belongs to. */
   templates: (Omit<Template, 'id' | 'agentId' | 'nextRunAt' | 'lastRunAt' | 'project'> & { employee?: string })[];

@@ -4,9 +4,8 @@ import React, { useState } from 'react';
 import { X } from 'lucide-react';
 import { Agent, APIProvider, Role } from '../lib/types';
 import { MODEL_SUGGESTIONS } from '../lib/officeConfig';
+import AvatarPicker from './AvatarPicker';
 import styles from './Dashboard.module.css';
-
-export const AVATARS = ['/avatars/robot.png', '/avatars/dog.png', '/avatars/manager.png', '/avatars/worker.png'];
 
 export const PROVIDERS: { value: APIProvider; label: string }[] = [
   { value: 'OpenAI', label: 'OpenAI' },
@@ -60,13 +59,7 @@ export default function EmployeeEditor({ agent, roles, onSave, onClose }: {
           <input className={styles.input} value={name} onChange={e => setName(e.target.value)} />
         </label>
 
-        <div style={{ display: 'flex', gap: 8 }}>
-          {AVATARS.map(src => (
-            <button key={src} type="button" onClick={() => setAvatar(src)} aria-label={`Avatar ${src.split('/').pop()}`} aria-pressed={avatar === src} style={{ padding: 0, border: avatar === src ? '2px solid #3b82f6' : '2px solid transparent', borderRadius: '50%', background: '#e2e8f0', cursor: 'pointer', lineHeight: 0 }}>
-              <img src={src} alt="" style={{ width: 40, height: 40, borderRadius: '50%' }} />
-            </button>
-          ))}
-        </div>
+        <AvatarPicker value={avatar} onChange={setAvatar} />
 
         <div style={{ display: 'flex', gap: 8 }}>
           <label style={label}>

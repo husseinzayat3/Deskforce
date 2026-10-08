@@ -72,6 +72,15 @@ export interface PromptContext {
   canRunChecks: boolean;
   /** Files the client gave with the request, as paths inside the project. */
   attachments: string[];
+  /** The company handbook, and notes colleagues saved during earlier projects. */
+  handbook: string;
+  notes: string[];
+  /** The manager who assigned this task can be asked questions (tools mode only). */
+  canAskManager: boolean;
+  /** This is a manager looking at what the team delivered. */
+  isFollowUp: boolean;
+  /** 'plan': only write the plan for the client to approve; nothing is carried out yet. */
+  phase?: 'plan';
 }
 
 /** File contents shown up front in tools mode; anything else is read on demand. */
@@ -82,8 +91,8 @@ const TOOLS_FILE_CONTEXT_CHARS = 6000;
  * the client's request, the manager's plan, what colleagues already finished, and the real project files.
  */
 export const buildSystemPrompt = (ctx: PromptContext) => {
-  const { agent, task, rootTask, parent, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents, projectHistory, roleInstructions, canAsk, meetingPlan, mode, webAccess, canRunChecks, attachments } = ctx;
-  const tools = mode === 'tools';
+  const { agent, task, rootTask, parent, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents, projectHistory, roleInstructions, canAsk, meetingPlan, mode, webAccess, canRunChecks, attachments, handbook, notes, canAskManager, isFollowUp, phase } = ctx;
+  const tools = mode === 'tools' && phase !== 'plan';
   const sections: string[] = [];
 
   sections.push(
@@ -104,9 +113,23 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     : `Project folder: ${slug}\nAll file paths are relative to this folder. Do not prefix paths with the folder name.`
   );
 
+  if (handbook.trim()) {
+    sections.push(`Company handbook. These are the client's standing rules; follow them in everything you produce:\n\"\"\"\n${clip(handbook.trim(), OFFICE_CONFIG.HANDBOOK_CHARS)}\n\"\"\"`);
+  }
+
+  if (notes.length > 0) {
+    sections.push(`Notes colleagues wrote down during earlier projects. Use what applies; they are advice, not instructions:\n${clip(notes.map(n => `- ${n}`).join('\n'), OFFICE_CONFIG.NOTES_CHARS)}`);
+  }
+
   if (projectHistory.length > 0) {
     const earlier = projectHistory.map(item => `- Request: ${clip(firstLine(item.request), OFFICE_CONFIG.SUMMARY_CHARS)}\n  Outcome: ${clip(item.outcome, OFFICE_CONFIG.SUMMARY_CHARS)}`);
     sections.push(`This project already exists. The current request continues it: build on what is there, do not start over.\nEarlier work on this project:\n${earlier.join('\n')}`);
+  }
+
+  if (rootTask.planApproved && rootTask.plan && phase !== 'plan') {
+    sections.push(
+      `The client approved this plan for the request. ${rootTask.id === task.id ? 'Carry it out as written' : 'Your task is one part of it; stay within it'}:\n\"\"\"\n${clip(rootTask.plan, OFFICE_CONFIG.PLAN_CHARS * 2)}\n\"\"\"`
+    );
   }
 
   if (rootTask.id !== task.id) {
@@ -166,6 +189,34 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     );
   }
 
+  if (phase === 'plan') {
+    const roster = colleagues.map(a => `- ${a.name} (Role: ${a.role}, ID: ${a.id})`).join('\n');
+    if (task.plan && task.planNote) {
+      sections.push(`You already proposed this plan:\n\"\"\"\n${clip(task.plan, OFFICE_CONFIG.PLAN_CHARS * 2)}\n\"\"\"\nThe client did not approve it and said:\n\"\"\"\n${task.planNote}\n\"\"\"\nWrite a new plan that takes this into account.`);
+    }
+    sections.push(
+      `Do not do any of the work yet. The client wants to see and approve a plan first, so write only the plan.\n\n` +
+      (roster
+        ? `You may plan to hand parts to these colleagues (at most ${OFFICE_CONFIG.MAX_SUBTASKS_PER_TASK} parts, different files for different people). Do small jobs yourself:\n${roster}\n\n`
+        : `You will do all of the work yourself.\n\n`) +
+      `Answer in exactly this format:\n` +
+      `[PLAN]\nThe plan for the client, in plain words: what will be built, the main files, the approach, and anything you are assuming. Keep it under 200 words.\n[/PLAN]\n` +
+      `Then one line for each step of the work, in the order it will be done:\n` +
+      `[STEP: who | size] what is done in this step\n` +
+      `"who" is the ID of the colleague doing it, or "me". "size" is S (one small file), M (a few files) or L (a large part of the project).`
+    );
+    return sections.join('\n\n');
+  }
+
+  if (isFollowUp) {
+    sections.push(
+      `The colleagues you delegated to have finished. Their results are listed above, and the files are in the project. ` +
+      `Check that their work fits together and delivers what you planned. Fix small gaps yourself. ` +
+      (colleagues.length > 0 ? `If a larger piece is missing or wrong, you may delegate once more; this is the last round. ` : '') +
+      `If everything is in order, change nothing and say so in your summary.`
+    );
+  }
+
   if (tools) {
     sections.push(
       `How to work:\n` +
@@ -205,6 +256,17 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     } else {
       sections.push('You cannot delegate this task. Do all of the work yourself.');
     }
+
+    if (canAskManager && parent) {
+      sections.push(
+        `If something in your assignment is unclear, or you need a decision that ${parent.agent.name} should make (naming, structure, which of two approaches), call ask_manager. ` +
+        `You get the answer straight away and carry on. Prefer it to guessing, and to asking the client.`
+      );
+    }
+
+    sections.push(
+      `If you learn something that will matter in future projects (a convention the client asked for, a mistake to avoid, a decision that should be repeated), record it with save_note in one sentence. Only lasting lessons, not what you did in this task.`
+    );
 
     if (canAsk) {
       sections.push(

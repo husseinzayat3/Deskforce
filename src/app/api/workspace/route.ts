@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listProjectFiles, previewEntry, projectExists, safeProject, viewProjectFile, zipProject } from '../../../lib/server/workspace';
+import { listProjectFiles, listProjects, previewEntry, projectExists, safeProject, viewProjectFile, zipProject } from '../../../lib/server/workspace';
 import { commitChanges, projectHistory, undoCommit } from '../../../lib/server/git';
 import { startPreview } from '../../../lib/server/preview';
 import { checksAllowed, runChecks } from '../../../lib/server/checks';
@@ -12,6 +12,7 @@ export const dynamic = 'force-dynamic';
 const COMMIT_ID = /^[0-9a-f]{40}$/;
 
 /**
+ * GET /api/workspace?projects=1                 → every project folder
  * GET /api/workspace?project=slug               → files, history, and whether it can be previewed
  * GET /api/workspace?project=slug&file=path     → one file as text
  * GET /api/workspace?project=slug&commit=id     → what one commit changed
@@ -25,6 +26,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const params = new URL(req.url).searchParams;
+    if (params.has('projects')) return NextResponse.json({ projects: listProjects() });
     const project = safeProject(params.get('project'));
     if (!project) return NextResponse.json({ error: 'Invalid project' }, { status: 400 });
     if (!projectExists(project)) return NextResponse.json({ error: 'Project not found' }, { status: 404 });

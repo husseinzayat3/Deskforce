@@ -61,6 +61,7 @@
 }
 
 .node[data-status='AWAITING_APPROVAL'],
+.node[data-status='PLAN_REVIEW'],
 .node[data-status='WAITING_FOR_INPUT'] { border-left-color: #8b5cf6; }
 .node[data-status='PENDING'] { border-left-color: #f59e0b; }
 .node[data-status='IN_PROGRESS'] { border-left-color: #3b82f6; }
@@ -149,7 +150,8 @@
 }
 
 .node[data-status='AWAITING_APPROVAL'] .status { background: #ede9fe; color: #6d28d9; animation: pulse 2s infinite; }
-.node[data-status='WAITING_FOR_INPUT'] .status { background: #ede9fe; color: #6d28d9; }
+.node[data-status='WAITING_FOR_INPUT'] .status,
+.node[data-status='PLAN_REVIEW'] .status { background: #ede9fe; color: #6d28d9; }
 .node[data-status='PENDING'] .status { background: #fef3c7; color: #b45309; }
 .node[data-status='IN_PROGRESS'] .status { background: #dbeafe; color: #1d4ed8; animation: pulse 1.6s ease-in-out infinite; }
 .node[data-status='COMPLETED'] .status { background: #d1fae5; color: #047857; }
@@ -356,4 +358,13 @@
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
+}
+
+/* A plan or a question shown on the task itself, above its details */
+.callout {
+  margin-top: 8px;
+  margin-left: 24px;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }

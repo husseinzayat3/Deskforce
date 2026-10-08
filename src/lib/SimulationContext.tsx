@@ -1,7 +1,8 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Agent, AgentState, Attachment, EventKind, OfficeFile, Role, Template } from './types';
+import { DEFAULT_LAYOUT, OfficeLayout, deskFor as seatFor } from './layout';
+import { Agent, AgentState, Attachment, EventKind, Note, OfficeFile, Role, Template } from './types';
 
 type NewAgent = Pick<Agent, 'name' | 'role' | 'api' | 'avatar' | 'model'>;
 
@@ -18,6 +19,8 @@ export interface AssignOptions {
   /** Continue an existing project instead of starting a new one. */
   project?: string;
   attachments?: Attachment[];
+  /** Have the employee propose a plan for approval before working. Left out, the office's default applies. */
+  plan?: boolean;
   /** The attachments are a folder whose files become the project. */
   attachedFolder?: boolean;
 }
@@ -56,6 +59,16 @@ interface SimulationContextType {
   roles: Role[];
   templates: Template[];
   month: MonthStatus;
+  /** Whether new tasks start with a plan unless told otherwise. */
+  planFirst: boolean;
+  /** Where the desks and rooms are, the floorplan picture and the uploaded avatars. */
+  layout: OfficeLayout;
+  saveLayout: (layout: OfficeLayout) => void;
+  /** Delete a project's folder together with every task that worked on it. */
+  deleteProject: (project: string) => void;
+  /** The company handbook and the notes agents saved. */
+  handbook: string;
+  notes: Note[];
   notifications: Notification[];
   notify: (message: string) => void;
   /** Employee last clicked on the map. `at` changes on every click, so clicking the same one again still counts. */
@@ -81,6 +94,16 @@ interface SimulationContextType {
   approveTask: (taskId: string) => void;
   haltAll: () => void;
   setPaused: (paused: boolean) => void;
+  /** Start the work on a proposed plan; `plan` replaces it with an edited version. */
+  approvePlan: (taskId: string, plan?: string) => void;
+  /** Ask for a different plan. */
+  rejectPlan: (taskId: string, note: string) => void;
+  /** Say something to an employee while their task runs. */
+  steerTask: (taskId: string, text: string) => void;
+  saveHandbook: (text: string) => void;
+  /** Run one request on several models, each alone in its own project, to compare them. */
+  compareModels: (agentId: string, prompt: string, candidates: { api: Agent['api']; model: string }[], budget?: number) => void;
+  removeNote: (id: string) => void;
   /** Answer the question a task is waiting on. */
   answerTask: (taskId: string, text: string) => void;
   saveRole: (role: Role) => void;
@@ -95,24 +118,11 @@ interface SimulationContextType {
 
 const SimulationContext = createContext<SimulationContextType | undefined>(undefined);
 
-// Define some points of interest in the office map based on a 1024x1024 or similar coordinate system
-export const POI = {
-  DESKS: {
-    CEO: [{ x: 480, y: 180 }, { x: 430, y: 180 }], // Meeting room / private area
-    'Tech Lead': [{ x: 150, y: 400 }, { x: 250, y: 400 }, { x: 350, y: 400 }, { x: 450, y: 400 }],
-    'Junior Dev': [{ x: 150, y: 550 }, { x: 250, y: 550 }, { x: 350, y: 550 }, { x: 450, y: 550 }, { x: 150, y: 700 }, { x: 250, y: 700 }, { x: 350, y: 700 }, { x: 450, y: 700 }],
-    'Designer': [{ x: 800, y: 350 }, { x: 850, y: 350 }],
-    'HR': [{ x: 800, y: 400 }]
-  },
-  /** Desks for roles that have no area of their own on the floorplan. */
-  SHARED_DESKS: [{ x: 600, y: 400 }, { x: 680, y: 400 }, { x: 600, y: 550 }, { x: 680, y: 550 }, { x: 600, y: 700 }, { x: 680, y: 700 }],
-  MEETING: { x: 455, y: 260 },
-  COFFEE: { x: 850, y: 450 },
-  BREAK_ROOM: { x: 800, y: 600 },
-  TOILET: { x: 800, y: 200 },
-};
-
-const ENTRANCE = { x: 500, y: 900 };
+/**
+ * Where things are on the map. Kept outside React so the movement code, which runs on a timer,
+ * always works with the layout that was last received from the server.
+ */
+let layoutNow: OfficeLayout = DEFAULT_LAYOUT;
 
 const POLL_MS = 1000;
 const TICK_MS = 1000;
@@ -138,25 +148,17 @@ interface Visual {
 
 const jitter = (range: number) => Math.random() * range - range / 2;
 
-const ROLE_DESKS: Record<string, { x: number; y: number }[]> = POI.DESKS;
-
-const deskFor = (agent: Agent, all: Agent[]) => {
-  const own = ROLE_DESKS[agent.role];
-  // Roles without their own area sit together, in hiring order
-  const group = own ? all.filter(a => a.role === agent.role) : all.filter(a => !ROLE_DESKS[a.role]);
-  const desks = own || POI.SHARED_DESKS;
-  return desks[Math.max(0, group.findIndex(a => a.id === agent.id)) % desks.length];
-};
+const deskFor = (agent: Agent, all: Agent[]) => seatFor(agent, all, layoutNow);
 
 const at = (visual: Visual, state: AgentState, spot: { x: number; y: number }): Visual =>
   ({ ...visual, state, x: spot.x, y: spot.y, targetX: spot.x, targetY: spot.y });
 
 const onBreak = (visual: Visual, state: 'COFFEE' | 'TOILET' | 'BREAK'): Visual => {
   const spot = state === 'COFFEE'
-    ? { x: POI.COFFEE.x + jitter(40), y: POI.COFFEE.y + jitter(40) }
+    ? { x: layoutNow.rooms.coffee.x + jitter(40), y: layoutNow.rooms.coffee.y + jitter(40) }
     : state === 'TOILET'
-      ? { x: POI.TOILET.x + jitter(40), y: POI.TOILET.y + jitter(40) }
-      : { x: POI.BREAK_ROOM.x + jitter(100), y: POI.BREAK_ROOM.y + jitter(100) };
+      ? { x: layoutNow.rooms.toilet.x + jitter(40), y: layoutNow.rooms.toilet.y + jitter(40) }
+      : { x: layoutNow.rooms.breakRoom.x + jitter(100), y: layoutNow.rooms.breakRoom.y + jitter(100) };
   return { ...at(visual, state, spot), breaksTaken: visual.breaksTaken + 1 };
 };
 
@@ -171,7 +173,7 @@ const stepVisuals = (prev: Record<string, Visual>, agents: Agent[], now: number,
 
   // Two things the server knows that show on the map: who is in a meeting, and who waits for an answer
   const meeting = new Set(agents.flatMap(a => a.taskQueue).filter(t => t.kind === 'MEETING' && t.status === 'IN_PROGRESS').flatMap(t => t.participants || []));
-  const waiting = new Set(agents.filter(a => a.taskQueue.some(t => t.status === 'WAITING_FOR_INPUT')).map(a => a.id));
+  const waiting = new Set(agents.filter(a => a.taskQueue.some(t => t.status === 'WAITING_FOR_INPUT' || t.status === 'PLAN_REVIEW')).map(a => a.id));
 
   for (const agent of agents) {
     const desk = deskFor(agent, agents);
@@ -179,11 +181,11 @@ const stepVisuals = (prev: Record<string, Visual>, agents: Agent[], now: number,
     let visual = before;
 
     if (!visual) {
-      const spot = seated ? desk : ENTRANCE;
+      const spot = seated ? desk : layoutNow.rooms.entrance;
       visual = { state: 'IDLE', x: spot.x, y: spot.y, targetX: desk.x, targetY: desk.y, breaksTaken: 0, idleSince: now };
     } else if (meeting.has(agent.id)) {
       if (visual.state !== 'MEETING') {
-        visual = at(visual, 'MEETING', { x: POI.MEETING.x + jitter(90), y: POI.MEETING.y + jitter(40) });
+        visual = at(visual, 'MEETING', { x: layoutNow.rooms.meeting.x + jitter(90), y: layoutNow.rooms.meeting.y + jitter(40) });
       }
     } else if (agent.state === 'WORKING') {
       if (visual.state !== 'WORKING' || visual.x !== desk.x || visual.y !== desk.y) {
@@ -223,6 +225,10 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [loaded, setLoaded] = useState(false);
   const [paused, setPausedState] = useState(false);
   const [live, setLive] = useState<Record<string, string>>({});
+  const [planFirst, setPlanFirst] = useState(true);
+  const [handbook, setHandbook] = useState('');
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [layout, setLayoutState] = useState<OfficeLayout>(DEFAULT_LAYOUT);
   const [roles, setRoles] = useState<Role[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [month, setMonth] = useState<MonthStatus>({ cap: 0, spent: 0, reached: false });
@@ -264,6 +270,13 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (Array.isArray(data.roles)) setRoles(data.roles);
     if (Array.isArray(data.templates)) setTemplates(data.templates);
     if (data.month) setMonth(data.month);
+    if (typeof data.planFirst === 'boolean') setPlanFirst(data.planFirst);
+    if (typeof data.handbook === 'string') setHandbook(data.handbook);
+    if (Array.isArray(data.notes)) setNotes(data.notes);
+    if (data.layout) {
+      layoutNow = data.layout;
+      setLayoutState(data.layout);
+    }
     // Unchanged while nothing is running, so idle polls do not re-render
     setLive(prev => (Object.keys(prev).length === 0 && Object.keys(data.live || {}).length === 0 ? prev : data.live || {}));
     if (typeof data.projectsDir === 'string') setProjectsDir(data.projectsDir);
@@ -333,6 +346,14 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const approveTask = useCallback((taskId: string) => { send({ action: 'approve', taskId }); }, [send]);
   const haltAll = useCallback(() => { send({ action: 'halt' }); }, [send]);
   const setPaused = useCallback((value: boolean) => { send({ action: 'pause', paused: value }); }, [send]);
+  const approvePlan = useCallback((taskId: string, plan?: string) => { send({ action: 'approvePlan', taskId, plan }); }, [send]);
+  const rejectPlan = useCallback((taskId: string, note: string) => { send({ action: 'rejectPlan', taskId, note }); }, [send]);
+  const steerTask = useCallback((taskId: string, text: string) => { send({ action: 'steer', taskId, text }); }, [send]);
+  const compareModels = useCallback((agentId: string, prompt: string, candidates: { api: Agent['api']; model: string }[], budget?: number) => { send({ action: 'compare', agentId, prompt, candidates, budget }); }, [send]);
+  const saveLayout = useCallback((next: OfficeLayout) => { send({ action: 'layout', layout: next }); }, [send]);
+  const deleteProject = useCallback((project: string) => { send({ action: 'deleteProject', project }); }, [send]);
+  const saveHandbook = useCallback((text: string) => { send({ action: 'handbook', text }); }, [send]);
+  const removeNote = useCallback((id: string) => { send({ action: 'removeNote', id }); }, [send]);
   const answerTask = useCallback((taskId: string, text: string) => { send({ action: 'answer', taskId, text }); }, [send]);
   const saveRole = useCallback((role: Role) => { send({ action: 'role', ...role }); }, [send]);
   const removeRole = useCallback((name: string) => { send({ action: 'removeRole', name }); }, [send]);
@@ -361,12 +382,13 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const agents = useMemo(() => serverAgents.map(agent => {
     const visual = visuals[agent.id];
     // Not placed yet (first render after it appeared): keep it where it is about to show up
-    const spot = visual || { state: 'IDLE' as AgentState, ...ENTRANCE, targetX: ENTRANCE.x, targetY: ENTRANCE.y };
+    const door = layoutNow.rooms.entrance;
+    const spot = visual || { state: 'IDLE' as AgentState, ...door, targetX: door.x, targetY: door.y };
     return { ...agent, state: spot.state, x: spot.x, y: spot.y, targetX: spot.targetX, targetY: spot.targetY };
   }), [serverAgents, visuals]);
 
   return (
-    <SimulationContext.Provider value={{ agents, paused, projectsDir, live, roles, templates, month, notifications, notify, focus, focusAgent, addAgent, removeAgent, editAgent, archiveTask, deleteTask, importOffice, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused, answerTask, saveRole, removeRole, saveTemplate, removeTemplate, runTemplate, setMonthlyCap }}>
+    <SimulationContext.Provider value={{ agents, paused, projectsDir, live, roles, templates, month, planFirst, handbook, notes, approvePlan, rejectPlan, steerTask, saveHandbook, removeNote, compareModels, layout, saveLayout, deleteProject, notifications, notify, focus, focusAgent, addAgent, removeAgent, editAgent, archiveTask, deleteTask, importOffice, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused, answerTask, saveRole, removeRole, saveTemplate, removeTemplate, runTemplate, setMonthlyCap }}>
       {children}
     </SimulationContext.Provider>
   );

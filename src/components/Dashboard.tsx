@@ -3,14 +3,19 @@
 import React, { useState } from 'react';
 import { useSimulation } from '../lib/SimulationContext';
 import { AgentRole, APIProvider, Agent, Attachment, TaskItem } from '../lib/types';
-import { UserPlus, Briefcase, Zap, CheckCircle2, ChevronRight, ChevronDown, MessageSquare, Terminal, Trash2, Pause, Play, SquareX, ListTree, Settings, Users, Wallet, BookmarkCheck, Pencil, Paperclip, FolderUp, X } from 'lucide-react';
+import { UserPlus, Briefcase, Zap, CheckCircle2, ChevronRight, ChevronDown, MessageSquare, Terminal, Trash2, Pause, Play, SquareX, ListTree, Settings, Users, Wallet, BookmarkCheck, Pencil, Paperclip, FolderUp, X, BookOpen, FolderKanban, Search } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import TaskTree from './TaskTree';
 import SettingsPanel from './SettingsPanel';
 import RolesPanel from './RolesPanel';
-import CostsPanel from './CostsPanel';
+import InsightsPanel from './InsightsPanel';
 import TemplatesPanel from './TemplatesPanel';
 import EmployeeEditor from './EmployeeEditor';
+import KnowledgePanel from './KnowledgePanel';
+import AvatarPicker from './AvatarPicker';
+import ProjectsPanel from './ProjectsPanel';
+import SearchPanel from './SearchPanel';
+import ProjectBrowser from './ProjectBrowser';
 import { readAttachments } from '../lib/attachments';
 import { OFFICE_CONFIG, MODEL_SUGGESTIONS, cleanPrompt, formatUsage, projectOf, taskTitle } from '../lib/officeConfig';
 import { TemplateDraft } from '../lib/SimulationContext';
@@ -25,7 +30,8 @@ const compactTokens = (tokens: number) => (tokens >= 1_000_000 ? `${(tokens / 1_
 
 export default function Dashboard() {
   const {
-    agents, paused, projectsDir, live, roles, templates, month, notifications, notify, focus,
+    agents, paused, projectsDir, live, roles, templates, month, planFirst, handbook, notes, notifications, notify, focus,
+    approvePlan, rejectPlan, steerTask, saveHandbook, removeNote, compareModels, deleteProject,
     addAgent, removeAgent, editAgent, archiveTask, deleteTask, importOffice, assignTask, retryTask, reviseTask, cancelTask, approveTask, haltAll, setPaused,
     answerTask, saveRole, removeRole, saveTemplate, removeTemplate, runTemplate, setMonthlyCap,
   } = useSimulation();
@@ -36,6 +42,10 @@ export default function Dashboard() {
   // Empty = the provider's default model from the settings
   const [model, setModel] = useState('');
   const [rolesOpen, setRolesOpen] = useState(false);
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  // Whether the task being assigned starts with a plan; null = the office's default
+  const [planChoice, setPlanChoice] = useState<boolean | null>(null);
+  const wantsPlan = planChoice ?? planFirst;
   // The hiring form stays out of the way once the office has people; null = not chosen by hand yet
   const [hireOpen, setHireOpen] = useState<boolean | null>(null);
   const showHire = hireOpen ?? agents.length === 0;
@@ -72,8 +82,18 @@ export default function Dashboard() {
   const [expandedAgentId, setExpandedAgentId] = useState<string | null>(null);
 
   // Right-panel view: employee roster or hierarchical task board
-  const [panelView, setPanelView] = useState<'roster' | 'tasks' | 'costs' | 'templates'>('roster');
-  const questionCount = agents.reduce((sum, a) => sum + a.taskQueue.filter(t => t.status === 'WAITING_FOR_INPUT').length, 0);
+  const [panelView, setPanelView] = useState<'roster' | 'tasks' | 'projects' | 'costs' | 'templates'>('roster');
+  const [search, setSearch] = useState('');
+  const searching = search.trim().length >= 2;
+  // A task to show on the task board, and a project whose files are open, both reached from search or the projects list
+  const [focusTask, setFocusTask] = useState<{ id: string; at: number } | null>(null);
+  const [openProject, setOpenProject] = useState<{ project: string; file?: string } | null>(null);
+  const showTask = (id: string) => {
+    setSearch('');
+    setPanelView('tasks');
+    setFocusTask({ id, at: Date.now() });
+  };
+  const questionCount = agents.reduce((sum, a) => sum + a.taskQueue.filter(t => t.status === 'WAITING_FOR_INPUT' || t.status === 'PLAN_REVIEW').length, 0);
   // The role picked in the form, or the most junior one while the list loads or after it changed
   const hireRole = roles.some(r => r.name === role) ? role : roles[roles.length - 1]?.name || '';
   const activeTaskCount = agents.reduce(
@@ -100,8 +120,10 @@ export default function Dashboard() {
     setTaskPrompt('');
     setTaskBudget('');
     setAttached(null);
+    setPlanChoice(null);
     assignTask(agent.id, prompt, {
       budget: Number(taskBudget) > 0 ? Number(taskBudget) : undefined,
+      plan: wantsPlan,
       ...(attached ? { attachments: attached.files, attachedFolder: attached.folder } : {}),
     });
     notify(`Task queued for ${agent.name}`);
@@ -140,6 +162,8 @@ return (
     <input ref={fileInput} type="file" multiple hidden onChange={e => pickFiles(e, false)} />
     {/* webkitdirectory lets a whole folder be picked; React has no typed prop for it */}
     <input ref={folderInput} type="file" multiple hidden onChange={e => pickFiles(e, true)} {...({ webkitdirectory: '' } as object)} />
+    {openProject && <ProjectBrowser key={`${openProject.project}:${openProject.file || ''}`} project={openProject.project} initialFile={openProject.file} onClose={() => setOpenProject(null)} notify={notify} />}
+    {knowledgeOpen && <KnowledgePanel handbook={handbook} notes={notes} onSave={saveHandbook} onRemoveNote={removeNote} onClose={() => setKnowledgeOpen(false)} />}
     {rolesOpen && <RolesPanel roles={roles} agents={agents} onSave={saveRole} onRemove={removeRole} onClose={() => setRolesOpen(false)} />}
 
     <div className={styles.header}>
@@ -159,6 +183,9 @@ return (
         </button>
         <button onClick={haltAll} className={styles.headerButton} style={{ background: '#ef4444' }} title="Cancel every task that has not finished">
           <SquareX size={14} /> Halt
+        </button>
+        <button onClick={() => setKnowledgeOpen(true)} className={styles.headerButton} style={{ background: '#475569' }} title="Company knowledge: the handbook and notes every employee is given" aria-label="Company knowledge">
+          <BookOpen size={14} />
         </button>
         <button onClick={() => setRolesOpen(true)} className={styles.headerButton} style={{ background: '#475569' }} title="Roles and their instructions" aria-label="Roles and their instructions">
           <Users size={14} />
@@ -184,17 +211,7 @@ return (
           onChange={(e) => setName(e.target.value)}
           className={styles.input}
         />
-        <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', marginBottom: '8px', paddingBottom: '4px' }}>
-          {['/avatars/robot.png', '/avatars/dog.png', '/avatars/manager.png', '/avatars/worker.png'].map(src => (
-            <img 
-              key={src} 
-              src={src} 
-              alt="avatar" 
-              onClick={() => setAvatar(src)}
-              style={{ width: '40px', height: '40px', borderRadius: '50%', cursor: 'pointer', border: avatar === src ? '2px solid #3b82f6' : '2px solid transparent', backgroundColor: '#e2e8f0' }} 
-            />
-          ))}
-        </div>
+        <AvatarPicker value={avatar} onChange={setAvatar} />
         <div className={styles.row}>
           <select aria-label="Role" value={hireRole} onChange={(e) => setRole(e.target.value)} className={styles.select}>
             {roles.map(r => <option key={r.name} value={r.name}>{r.name}</option>)}
@@ -230,7 +247,13 @@ return (
     </div>
 
     <div className={`${styles.card} ${styles.panelCard}`}>
-      <div className={styles.tabs} role="tablist">
+      <div className={styles.searchBox}>
+        <Search size={14} />
+        <input type="search" aria-label="Search tasks and project files" placeholder="Search tasks and files…" value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') setSearch(''); }} />
+        {search && <button type="button" onClick={() => setSearch('')} aria-label="Clear the search"><X size={14} /></button>}
+      </div>
+
+      <div className={styles.tabs} role="tablist" style={searching ? { display: 'none' } : undefined}>
         <button
           id="tab-roster"
           role="tab"
@@ -252,13 +275,22 @@ return (
           {questionCount > 0 && <span className={styles.tabCount} style={{ background: '#f59e0b' }} title="Questions waiting for your answer">?{questionCount}</span>}
         </button>
         <button
+          id="tab-projects"
+          role="tab"
+          aria-selected={panelView === 'projects'}
+          className={`${styles.tab} ${panelView === 'projects' ? styles.tabActive : ''}`}
+          onClick={() => setPanelView('projects')}
+        >
+          <FolderKanban size={14} /> Projects
+        </button>
+        <button
           id="tab-costs"
           role="tab"
           aria-selected={panelView === 'costs'}
           className={`${styles.tab} ${panelView === 'costs' ? styles.tabActive : ''}`}
           onClick={() => setPanelView('costs')}
         >
-          <Wallet size={14} /> Costs
+          <Wallet size={14} /> Insights
         </button>
         <button
           id="tab-templates"
@@ -271,9 +303,17 @@ return (
         </button>
       </div>
 
-      {panelView === 'costs' ? (
+      {searching ? (
         <div className={styles.agentList}>
-          <CostsPanel agents={agents} month={month} onSetCap={setMonthlyCap} />
+          <SearchPanel query={search.trim()} onOpenTask={showTask} onOpenFile={(project, file) => setOpenProject({ project, file })} />
+        </div>
+      ) : panelView === 'projects' ? (
+        <div className={styles.agentList}>
+          <ProjectsPanel agents={agents} planFirst={planFirst} notify={notify} onOpenFiles={project => setOpenProject({ project })} onOpenTask={showTask} onContinue={assignTask} onDelete={deleteProject} />
+        </div>
+      ) : panelView === 'costs' ? (
+        <div className={styles.agentList}>
+          <InsightsPanel agents={agents} month={month} onSetCap={setMonthlyCap} onCompare={compareModels} onUse={(agentId, api, model) => editAgent(agentId, { api, model })} notify={notify} />
         </div>
       ) : panelView === 'templates' ? (
         <div className={styles.agentList}>
@@ -289,12 +329,17 @@ return (
             live={live}
             notify={notify}
             onAnswer={answerTask}
+            onApprovePlan={approvePlan}
+            onRejectPlan={rejectPlan}
+            onSteer={steerTask}
+            planFirst={planFirst}
+            focusTask={focusTask}
             onArchive={archiveTask}
             onDelete={deleteTask}
             onSaveTemplate={startTemplateFrom}
             onRetry={retryTask}
             onRevise={reviseTask}
-            onContinue={(agentId, project, prompt, budget) => assignTask(agentId, prompt, { project, budget })}
+            onContinue={(agentId, project, prompt, budget, plan) => assignTask(agentId, prompt, { project, budget, plan })}
           />
         </div>
       ) : (
@@ -394,6 +439,12 @@ return (
                   <ChevronRight size={16} />
                 </button>
               </div>
+            )}
+            {activeTaskAgent === agent.id && (
+              <label onClick={e => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#475569', padding: '0 12px 8px', background: '#fff', cursor: 'pointer' }} title="The employee first proposes a plan with a cost estimate. Nothing is built until you approve it.">
+                <input type="checkbox" checked={wantsPlan} onChange={e => setPlanChoice(e.target.checked)} />
+                Show me a plan to approve before any work starts
+              </label>
             )}
             {activeTaskAgent === agent.id && attached && (
               <div onClick={e => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#475569', padding: '4px 12px 8px' }}>

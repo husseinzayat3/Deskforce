@@ -1,13 +1,14 @@
 import { getDb } from '../db';
-import { Agent, AgentState, APIProvider, AgentRole, EventKind, Role, TaskItem, TaskStatus, Template } from '../types';
+import { Agent, AgentState, APIProvider, AgentRole, EventKind, Note, Role, TaskItem, TaskStatus, Template } from '../types';
 import { DEFAULT_ROLES } from '../officeConfig';
+import { DEFAULT_LAYOUT, OfficeLayout, sanitizeLayout } from '../layout';
 
 /**
  * The office state in SQLite. The server is the only writer: the engine and the API route
  * go through these functions, and browsers only read what they return.
  */
 
-const UNFINISHED: TaskStatus[] = ['AWAITING_APPROVAL', 'WAITING_FOR_INPUT', 'PENDING', 'IN_PROGRESS'];
+const UNFINISHED: TaskStatus[] = ['AWAITING_APPROVAL', 'WAITING_FOR_INPUT', 'PLAN_REVIEW', 'PENDING', 'IN_PROGRESS'];
 const MAX_EVENTS = 100;
 
 const newId = () => Math.random().toString(36).slice(2, 11);
@@ -49,6 +50,18 @@ const toTask = (t: any): TaskItem => ({
   participants: t.participants ? safeParseArray(t.participants) : undefined,
   blockedBy: t.blockedBy || undefined,
   archived: t.archived ? true : undefined,
+  needsPlan: t.needsPlan ? true : undefined,
+  cachedTokens: t.cachedTokens ?? undefined,
+  durationMs: t.durationMs ?? undefined,
+  retries: t.retries ?? undefined,
+  revisions: t.revisions ?? undefined,
+  compareId: t.compareId || undefined,
+  apiOverride: t.apiOverride || undefined,
+  modelOverride: t.modelOverride || undefined,
+  plan: t.plan || undefined,
+  planApproved: t.planApproved ? true : undefined,
+  planEstimate: t.planEstimate ?? undefined,
+  planNote: t.planNote || undefined,
   attachments: t.attachments ? safeParseArray(t.attachments) : undefined,
   checkRuns: t.checkRuns ?? undefined,
   checkPassed: t.checkPassed === null || t.checkPassed === undefined ? undefined : Boolean(t.checkPassed),
@@ -179,23 +192,24 @@ export const createTask = (
   agentId: string,
   prompt: string,
   assignedBy: string,
-  options: Pick<TaskItem, 'parentId' | 'kind' | 'reviewStatus' | 'reviewNote' | 'title' | 'project' | 'budget' | 'participants' | 'blockedBy'> & { status?: TaskStatus } = {}
+  options: Pick<TaskItem, 'parentId' | 'kind' | 'reviewStatus' | 'reviewNote' | 'title' | 'project' | 'budget' | 'participants' | 'blockedBy' | 'needsPlan' | 'compareId' | 'apiOverride' | 'modelOverride'> & { status?: TaskStatus } = {}
 ) => {
   const id = newId();
   getDb().prepare(`
-    INSERT INTO tasks (id, agentId, prompt, assignedBy, status, createdAt, parentId, kind, reviewStatus, reviewNote, title, project, budget, participants, blockedBy)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO tasks (id, agentId, prompt, assignedBy, status, createdAt, parentId, kind, reviewStatus, reviewNote, title, project, budget, participants, blockedBy, needsPlan, compareId, apiOverride, modelOverride)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, agentId, prompt, assignedBy, options.status || 'PENDING', Date.now(), options.parentId || null, options.kind || null,
     options.reviewStatus || null, options.reviewNote || null, options.title || null, options.project || null, options.budget ?? null,
-    options.participants?.length ? JSON.stringify(options.participants) : null, options.blockedBy || null
+    options.participants?.length ? JSON.stringify(options.participants) : null, options.blockedBy || null, options.needsPlan ? 1 : null,
+    options.compareId || null, options.apiOverride || null, options.modelOverride || null
   );
   bump();
   return id;
 };
 
 /** Columns that map one-to-one onto task fields. `response`/`error` share the `answer` column and are handled apart. */
-const PATCHABLE = ['status', 'summary', 'tokens', 'cost', 'model', 'kind', 'report', 'project', 'reviewStatus', 'reviewNote', 'feedback', 'completedAt', 'question', 'clarifications', 'blockedBy', 'checkRuns', 'checkOutput'] as const;
+const PATCHABLE = ['status', 'summary', 'tokens', 'cost', 'model', 'kind', 'report', 'project', 'reviewStatus', 'reviewNote', 'feedback', 'completedAt', 'question', 'clarifications', 'blockedBy', 'checkRuns', 'checkOutput', 'plan', 'planEstimate', 'planNote', 'cachedTokens', 'durationMs', 'retries', 'revisions'] as const;
 
 export const updateTask = (taskId: string, patch: Partial<TaskItem>) => {
   const sets: string[] = [];
@@ -206,6 +220,10 @@ export const updateTask = (taskId: string, patch: Partial<TaskItem>) => {
       sets.push(`${column} = ?`);
       values.push(patch[column] ?? null);
     }
+  }
+  if ('planApproved' in patch) {
+    sets.push('planApproved = ?');
+    values.push(patch.planApproved ? 1 : null);
   }
   if ('archived' in patch) {
     sets.push('archived = ?');
@@ -358,3 +376,76 @@ export const deleteTemplate = (id: string) => {
   getDb().prepare('DELETE FROM templates WHERE id = ?').run(id);
   bump();
 };
+
+// --- company knowledge ------------------------------------------------------
+
+export const MAX_HANDBOOK_CHARS = 8000;
+export const MAX_NOTE_CHARS = 400;
+/** Oldest notes are dropped beyond this, so the list every agent reads stays short. */
+const MAX_NOTES = 40;
+
+/** The handbook every agent is given: conventions, tone, preferred tools. */
+export const getHandbook = () => getMeta('handbook') || '';
+
+export const setHandbook = (text: string) => {
+  setMeta('handbook', text.slice(0, MAX_HANDBOOK_CHARS));
+  bump();
+};
+
+/** Newest first. */
+export const listNotes = (): Note[] =>
+  (getDb().prepare('SELECT id, text, author, project, at FROM notes ORDER BY at DESC, rowid DESC').all() as any[])
+    .map(n => ({ id: n.id, text: n.text, author: n.author, project: n.project || undefined, at: n.at }));
+
+export const addNote = (text: string, author: string, project?: string) => {
+  const db = getDb();
+  // The same lesson written down twice is still one lesson
+  const lesson = text.slice(0, MAX_NOTE_CHARS).trim();
+  if (db.prepare('SELECT 1 FROM notes WHERE lower(text) = lower(?)').get(lesson)) return;
+  db.prepare('INSERT INTO notes (id, text, author, project, at) VALUES (?, ?, ?, ?, ?)').run(newId(), text.slice(0, MAX_NOTE_CHARS), author, project || null, Date.now());
+  db.prepare('DELETE FROM notes WHERE id NOT IN (SELECT id FROM notes ORDER BY at DESC, rowid DESC LIMIT ?)').run(MAX_NOTES);
+  bump();
+};
+
+export const deleteNote = (id: string) => {
+  getDb().prepare('DELETE FROM notes WHERE id = ?').run(id);
+  bump();
+};
+
+// --- office layout ----------------------------------------------------------
+
+/** Where the desks and rooms are, the floorplan picture, and the uploaded avatars. */
+export const getLayout = (): OfficeLayout => {
+  const saved = getMeta('layout');
+  if (!saved) return DEFAULT_LAYOUT;
+  try {
+    return sanitizeLayout(JSON.parse(saved));
+  } catch {
+    return DEFAULT_LAYOUT;
+  }
+};
+
+export const setLayout = (layout: OfficeLayout) => {
+  setMeta('layout', JSON.stringify(sanitizeLayout(layout)));
+  bump();
+};
+
+/** Money spent outside of tasks (chat with the office, deleted tasks) in the month starting at `monthStart`. */
+export const addOtherSpend = (monthStart: number, usd: number) => {
+  if (usd > 0) setMeta(`deletedSpend:${monthStart}`, String(deletedSpend(monthStart) + usd));
+};
+
+// --- chat -------------------------------------------------------------------
+
+/** Turns kept per conversation; older ones are dropped. */
+const MAX_CHAT_TURNS = 60;
+
+export const addChatTurn = (conversation: string, role: 'user' | 'assistant', text: string) => {
+  const db = getDb();
+  db.prepare('INSERT INTO chat (conversation, role, text, at) VALUES (?, ?, ?, ?)').run(conversation, role, text, Date.now());
+  db.prepare('DELETE FROM chat WHERE conversation = ? AND id NOT IN (SELECT id FROM chat WHERE conversation = ? ORDER BY id DESC LIMIT ?)').run(conversation, conversation, MAX_CHAT_TURNS);
+};
+
+/** The last turns of a conversation, oldest first. */
+export const recentChat = (conversation: string, limit: number) =>
+  (getDb().prepare('SELECT role, text FROM chat WHERE conversation = ? ORDER BY id DESC LIMIT ?').all(conversation, limit) as { role: 'user' | 'assistant'; text: string }[]).reverse();

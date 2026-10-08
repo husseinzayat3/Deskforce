@@ -38,6 +38,8 @@ export interface AgentRun {
   /** Everything it wrote along the way, with a line per tool call. Stored as the task's response. */
   transcript: string;
   tokens: number;
+  /** How many of those tokens were input read from the provider's cache. */
+  cachedTokens: number;
   cost: number | undefined;
   model: string;
   /** True when the loop was stopped by a tool (the agent asked the user something). */
@@ -45,24 +47,35 @@ export interface AgentRun {
   problems: string[];
 }
 
+/** Marks text that comes from the user in the middle of a task, as opposed to a tool's output. */
+const FROM_CLIENT = '[Message from the client, sent while you were working]';
+
 const str = (value: unknown) => (typeof value === 'string' ? value : '');
 
-export const runAgent = async ({ provider, model, system, prompt, images, tools, nativeWeb, overBudget, onText, signal }: {
+export const runAgent = async ({ provider, model, system, prompt, images, history = [], maxSteps = MAX_STEPS, tools, nativeWeb, cacheKey, overBudget, inbox, onText, signal }: {
   provider: APIProvider;
   model?: string;
   system: string;
   prompt: string;
   images?: ImagePart[];
+  /** Earlier turns of the same conversation, before `prompt`. */
+  history?: Turn[];
+  /** Most steps this run may take; a chat reply needs far fewer than a task. */
+  maxSteps?: number;
   tools: AgentTool[];
   nativeWeb: boolean;
+  /** Identifies this run to the provider's cache: every step resends what the steps before it sent. */
+  cacheKey: string;
   /** Given what this run has cost so far, is the task's budget used up? */
   overBudget: (spent: number) => boolean;
+  /** Takes the messages the user sent to this task since the last look. */
+  inbox: () => string[];
   onText: (delta: string) => void;
   signal: AbortSignal;
 }): Promise<AgentRun> => {
-  const turns: Turn[] = [{ role: 'user', text: prompt, images }];
+  const turns: Turn[] = [...history, { role: 'user', text: prompt, images }];
   const specs: ToolSpec[] = tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
-  const run: AgentRun = { finalText: '', transcript: '', tokens: 0, cost: 0, model: '', stopped: false, problems: [] };
+  const run: AgentRun = { finalText: '', transcript: '', tokens: 0, cachedTokens: 0, cost: 0, model: '', stopped: false, problems: [] };
   const note = (line: string) => {
     run.transcript += `${run.transcript && !run.transcript.endsWith('\n') ? '\n' : ''}${line}\n`;
     onText(`\n${line}\n`);
@@ -73,9 +86,10 @@ export const runAgent = async ({ provider, model, system, prompt, images, tools,
   let reminded = false;
   const canWrite = tools.some(tool => tool.name === 'write_file');
 
-  for (let step = 0; step < MAX_STEPS; step++) {
-    const result = await runStep({ provider, model, system, turns, tools: specs, maxTokens: STEP_MAX_TOKENS, nativeWeb, onText, signal });
+  for (let step = 0; step < maxSteps; step++) {
+    const result = await runStep({ provider, model, system, turns, tools: specs, maxTokens: STEP_MAX_TOKENS, nativeWeb, cacheKey, onText, signal });
     run.tokens += result.tokens;
+    run.cachedTokens += result.cachedTokens;
     run.cost = addCost(run.cost, result.cost);
     run.model = result.model;
     if (result.text) run.transcript += `${run.transcript && !run.transcript.endsWith('\n') ? '\n' : ''}${result.text}`;
@@ -102,6 +116,17 @@ export const runAgent = async ({ provider, model, system, prompt, images, tools,
     }
 
     if (result.toolCalls.length === 0) {
+      // The user said something while the model was writing its closing message: not done yet
+      const late = inbox();
+      if (late.length > 0) {
+        late.forEach(message => note(`(message from the client: ${message})`));
+        turns.push(
+          { role: 'assistant', text: result.text || '(no text)', raw: result.raw },
+          { role: 'user', text: `${FROM_CLIENT}\n${late.join('\n\n')}\n\nTake this into account, do what it asks, then reply with your summary.` },
+        );
+        continue;
+      }
+
       run.finalText = result.text.trim();
       if (result.truncated) run.problems.push('The closing message reached the length limit and may be incomplete.');
       return run;
@@ -129,6 +154,13 @@ export const runAgent = async ({ provider, model, system, prompt, images, tools,
 
     if (run.stopped) return run;
 
+    // Messages the user sent while the task was running reach the model with its next tool results
+    const messages = inbox();
+    if (messages.length > 0) {
+      messages.forEach(message => note(`(message from the client: ${message})`));
+      results[results.length - 1].output += `\n\n${FROM_CLIENT}\n${messages.join('\n\n')}\n\nTake this into account from here on.`;
+    }
+
     // Out of money: say so once, give a couple of steps to finish cleanly, then stop
     if (overBudget(run.cost || 0)) {
       if (budgetWarnedAt === undefined) {
@@ -143,7 +175,7 @@ export const runAgent = async ({ provider, model, system, prompt, images, tools,
     turns.push({ role: 'tool', results });
   }
 
-  run.problems.push(`Stopped after ${MAX_STEPS} steps without finishing.`);
+  run.problems.push(`Stopped after ${maxSteps} steps without finishing.`);
   return run;
 };
 

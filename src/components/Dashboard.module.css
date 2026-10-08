@@ -1,6 +1,5 @@
 .dashboard {
-  background-color: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(12px);
+  background-color: #f8fafc;
   border: 1px solid rgba(226, 232, 240, 0.8);
   border-radius: 20px;
   padding: 16px;
@@ -81,6 +80,8 @@
 
 .card {
   background: #ffffff;
+  /* Cards are always light, whatever the page around them */
+  color: #0f172a;
   border-radius: 12px;
   padding: 16px;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
@@ -128,6 +129,55 @@
   flex: 1;
   min-height: 0;
   padding: 12px;
+  /* Lets the tabs adapt to the sidebar's own width */
+  container-type: inline-size;
+}
+
+/* Five tabs in a narrow sidebar: the words alone say enough */
+@container (max-width: 440px) {
+  .tab svg { display: none; }
+}
+
+.searchBox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px;
+  margin-bottom: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #64748b;
+  flex-shrink: 0;
+}
+
+.searchBox:focus-within {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  background: #fff;
+}
+
+.searchBox input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.searchBox input::-webkit-search-cancel-button { display: none; }
+
+.searchBox button {
+  display: flex;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: #64748b;
+  cursor: pointer;
 }
 
 .cardHeader {
@@ -636,6 +686,7 @@
   color: #dc2626;
 }
 .historyItem[data-status="AWAITING_APPROVAL"] .taskStatus,
+.historyItem[data-status="PLAN_REVIEW"] .taskStatus,
 .historyItem[data-status="WAITING_FOR_INPUT"] .taskStatus {
   background: #ede9fe;
   color: #6d28d9;

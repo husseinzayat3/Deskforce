@@ -4,18 +4,28 @@ A virtual office where AI agents work as a team. Hire employees, give the CEO a 
 
 ## Features
 
+- **Your own office** — upload a floorplan and avatars, and drag the desks and rooms to where they are on it. Each desk can belong to a role.
+- **Talk to it from Slack** — message the office and your most senior employee answers: it starts tasks, reports how things stand, and tells you when a plan, a question or a report is waiting.
+- **Projects and search** — a page per project with its files, cost and requests, and a search across every task and every project file.
 - **Visual office map** — each agent is a clickable avatar on the floorplan (click to open its tasks). The speech bubble shows what the model is writing as it writes it, and agents walk to the meeting room, the coffee machine and the break room.
 - **Runs on the server** — tasks are executed by the server, not the browser tab. Close the page and the work carries on; after a restart, interrupted tasks go back in the queue.
 - **Roles you define** — an office starts with eight roles (CEO, Tech Lead, Designer, QA, DevOps and more). Edit their instructions and seniority or add your own; an agent can only delegate to more junior roles.
 - **A model per employee** — OpenAI, Anthropic (Claude), Google Gemini, Grok (xAI) or a local model through Ollama, and the exact model for each hire: a strong one for managers and reviewers, a cheap one for juniors.
 - **Shared context** — every agent sees the original request, its manager's plan, what colleagues already finished and the current project files, so work is built on rather than overwritten.
+- **Plan first** — a task can start with the employee proposing a plan and a rough cost estimate. Nothing is built until you approve it, edit it, or ask for another.
+- **Follow-up rounds** — when delegated work comes back, the manager reads the results, fixes gaps, and may delegate once more before the final review.
+- **Questions up the chain** — an employee who is unsure asks the manager who assigned the task and gets the answer straight away; only what the manager cannot decide reaches you.
+- **Company knowledge** — a handbook you write (conventions, tone, preferred tools) that every employee is given, plus notes employees save for future projects.
+- **Message a running task** — say something to an employee mid-task without halting it.
 - **Meetings** — when two agents are asked to change the same file, they meet first, agree who does what, and then work one after the other.
 - **Questions** — an agent that cannot do a task without information only you have asks, and carries on when you answer.
 - **Final review and report** — when all delegated work is done, the task owner checks the whole project and fixes gaps. Each task you assign then gets a report.
 - **Files, history and undo** — browse a project's files in the app. Every task is a git commit in the agent's name: see exactly what it changed and undo it with one click.
 - **Preview** — projects with a web page (`index.html`) open in a preview, served from their own local address.
 - **Task board** — a nested view of each task and its sub-tasks, with progress, tokens, estimated cost, live output, and buttons to retry, request changes or continue the project.
-- **Costs** — spending per day, per employee and per model, a budget per task, and a monthly cap that stops new work when it is reached.
+- **Costs** — spending per day, per employee and per model, a budget per task, and a monthly cap that stops new work when it is reached. Repeated context is cached at the provider, so each further step of a task costs a fraction.
+- **Performance** — per employee and per model: success rate, how often the work had to be fixed afterwards, average cost and time.
+- **Model comparison** — run the same request on two or three models, each alone in its own project, and compare result, time and cost side by side before deciding who to "hire".
 - **Templates and schedules** — save a task to run again with a click, or every day or week at a set time.
 - **Real tools, real output** — agents read, write and edit the project's files through tool calls, into a per-task folder under `workspace/projects/`. Models that cannot call tools fall back to a tagged text format.
 - **Web access** — agents search the web and read pages for current facts instead of inventing them. They can only reach public websites.
@@ -73,13 +83,16 @@ The office engine (`src/lib/server/engine.ts`) starts with the server and checks
 | `list_files`, `read_file` | Look at the project as it is now |
 | `write_file`, `edit_file`, `delete_file` | Create, change or remove a file in the project folder |
 | `delegate` | Hands a sub-task to a more junior colleague |
+| `ask_manager` | Asks the manager who assigned the task; the answer comes back at once |
 | `ask_client` | Pauses the task and asks you |
+| `save_note` | Writes down a lesson for future projects |
 | `web_search`, `fetch_url` | Look something up (Claude uses Anthropic's own web tools instead) |
+| `post_to_slack` | Tells you something in Slack, when it is connected |
 | `run_checks` | Checks syntax and runs tests, when you turned that on |
 
 Every task that changes files becomes one git commit in the employee's name. A model that cannot call tools (for example `llama3` on Ollama) is given the same abilities as tags in plain text, such as `[FILE: path] … [/FILE]`; it has no web access and cannot run checks.
 
-The guardrail limits and the per-model prices used for cost estimates live in `src/lib/officeConfig.ts`. Costs are estimates from list prices; local Ollama models count as free.
+The guardrail limits, the per-model prices and the discounts for cached input used for cost estimates live in `src/lib/officeConfig.ts`. Costs are estimates from list prices; local Ollama models count as free.
 
 | Part | Technology |
 | --- | --- |
@@ -88,6 +101,53 @@ The guardrail limits and the per-model prices used for cost estimates live in `s
 | Database | `better-sqlite3` |
 | AI | OpenAI SDK (OpenAI and Grok), Anthropic SDK, Gemini and Ollama HTTP APIs, all streamed, with native tool calling |
 | History | `isomorphic-git` (no `git` program needed) |
+
+## Slack
+
+The office can be reached from Slack without exposing your computer to the internet: it opens the connection to Slack itself (Socket Mode).
+
+1. At [api.slack.com/apps](https://api.slack.com/apps) choose **Create New App → From a manifest**, pick your workspace, and paste:
+
+   ```yaml
+   display_information:
+     name: My Office
+   features:
+     bot_user:
+       display_name: My Office
+       always_online: true
+     app_home:
+       messages_tab_enabled: true
+       messages_tab_read_only_enabled: false
+   oauth_config:
+     scopes:
+       bot:
+         - chat:write
+         - im:history
+         - app_mentions:read
+   settings:
+     event_subscriptions:
+       bot_events:
+         - message.im
+         - app_mention
+     socket_mode_enabled: true
+   ```
+
+2. Under **Basic Information → App-Level Tokens**, create a token with the `connections:write` scope. It starts with `xapp-`.
+3. Under **Install App**, install it to the workspace and copy the **Bot User OAuth Token**. It starts with `xoxb-`.
+4. In the office, open Settings → Slack and paste both tokens. The status line shows "Connected".
+5. Send the app a direct message. It answers with your Slack user ID; add that ID to the allowed users in Settings. From then on it takes your instructions.
+
+Only the listed users can give instructions; everyone else is told so and nothing happens. In a channel, mention the app (`@My Office status`) after inviting it.
+
+What you can say is free text: "build me a landing page for the bakery", "how are things?", "approve the plan", "tell them to use blue instead", "cancel that". The employee who answers works through the same actions as the buttons in the app, and the office posts to your conversation when a plan or a question is waiting, a report is ready, or a task failed.
+
+The same conversation is available to scripts on this computer:
+
+```bash
+curl -X POST http://localhost:3000/api/chat -H 'Content-Type: application/json' -d '{"text":"how are things?"}'
+```
+
+Chatting uses the answering employee's model and counts towards the monthly spending.
 
 ## Checks
 

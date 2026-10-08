@@ -71,10 +71,12 @@ const postJson = async (body: Record<string, unknown>) => {
 };
 
 /** A project's files and history: read any file, see what each task changed, undo a task, preview a web page. */
-export default function ProjectBrowser({ project, commitId, onClose, notify }: {
+export default function ProjectBrowser({ project, commitId, initialFile, onClose, notify }: {
   project: string;
   /** Open straight on what this commit changed. */
   commitId?: string;
+  /** Open straight on this file. */
+  initialFile?: string;
   onClose: () => void;
   notify: (message: string) => void;
 }) {
@@ -114,6 +116,10 @@ export default function ProjectBrowser({ project, commitId, onClose, notify }: {
         const data: Overview = await getJson(base);
         if (closed) return;
         setOverview(data);
+        if (initialFile) {
+          const file = await getJson(`${base}&file=${encodeURIComponent(initialFile)}`);
+          if (!closed) setView({ kind: 'file', path: initialFile, text: file.text, size: file.size });
+        }
         const target = commitId && data.history.find(c => c.id === commitId);
         if (target) {
           const changes = await getJson(`${base}&commit=${target.id}`);
@@ -126,7 +132,7 @@ export default function ProjectBrowser({ project, commitId, onClose, notify }: {
     return () => {
       closed = true;
     };
-  }, [base, commitId]);
+  }, [base, commitId, initialFile]);
 
   const showFile = (path: string) => run(async () => {
     const data = await getJson(`${base}&file=${encodeURIComponent(path)}`);

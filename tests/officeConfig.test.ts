@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_ROLES, estimateCost, priceOf, projectNameFromPrompt, rankOf, similarity, slugifyProjectName, taskTitle, titleFromDescription } from '../src/lib/officeConfig';
+import { DEFAULT_ROLES, delegationDepth, indexTasks, estimateCost, priceOf, projectNameFromPrompt, rankOf, similarity, slugifyProjectName, taskTitle, titleFromDescription } from '../src/lib/officeConfig';
 import { TaskItem } from '../src/lib/types';
 
 const task = (patch: Partial<TaskItem>): TaskItem => ({ id: 't', prompt: '', status: 'PENDING', timestamp: 0, assignedBy: 'User', ...patch });
@@ -40,4 +40,18 @@ test('task titles', () => {
 test('unknown roles rank below every real one', () => {
   assert.equal(rankOf(DEFAULT_ROLES, 'CEO'), 0);
   assert.ok(rankOf(DEFAULT_ROLES, 'No such role') > rankOf(DEFAULT_ROLES, 'Junior Dev'));
+});
+
+test('a follow-up stands at the level of the task it follows up on', () => {
+  const person = (id: string, taskQueue: TaskItem[]) => ({ id, name: id, avatar: '', role: 'CEO', api: 'Ollama' as const, state: 'IDLE' as const, x: 0, y: 0, targetX: 0, targetY: 0, tokensUsed: 0, currentTask: null, idleTicks: 0, workingTicks: 0, breaksTaken: 0, taskQueue });
+  const index = indexTasks([
+    person('boss', [task({ id: 'root' }), task({ id: 'follow', parentId: 'root', kind: 'FOLLOWUP' })]),
+    person('dev', [task({ id: 'first', parentId: 'root' }), task({ id: 'second', parentId: 'follow' }), task({ id: 'deep', parentId: 'first' })]),
+  ]);
+  assert.equal(delegationDepth('root', index), 0);
+  assert.equal(delegationDepth('follow', index), 0);
+  assert.equal(delegationDepth('first', index), 1);
+  // Work delegated in the second round is no deeper than work from the first
+  assert.equal(delegationDepth('second', index), 1);
+  assert.equal(delegationDepth('deep', index), 2);
 });

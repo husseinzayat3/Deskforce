@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { abortRunning, ensureEngine, monthStatus } from '../../../lib/server/engine';
+import { abortRunning, ensureEngine, monthStatus, steerTask } from '../../../lib/server/engine';
+import { getSetting } from '../../../lib/server/settings';
+import * as actions from '../../../lib/server/actions';
+import { MEDIA_URL, sanitizeLayout } from '../../../lib/layout';
+import { deleteMedia } from '../../../lib/server/media';
 import { liveSnapshot } from '../../../lib/server/live';
 import { refuseForeignRequest, refuseUnknownHost } from '../../../lib/server/guard';
 import { nextRunTime } from '../../../lib/schedule';
@@ -39,13 +43,7 @@ const overview = (agents: Agent[]): Agent[] => agents.map(agent => ({
 
 const badRequest = (error: string) => NextResponse.json({ error }, { status: 400 });
 
-/** A task of a finished project is running again, so the project's report is out of date: drop it until the work is done. */
-const reopenProject = (taskId: string) => {
-  const root = getRoot(taskId, indexTasks(store.getState()))?.task;
-  if (root) store.updateTask(root.id, { report: undefined, checkRuns: 0, checkPassed: undefined, checkOutput: undefined });
-};
-
-const AVATAR = /^\/avatars\/[a-z0-9_-]+\.png$/i;
+const AVATAR = MEDIA_URL;
 const clean = (value: unknown, max: number) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
 
 /** The office without its history or its keys, to be saved as a file and loaded into another office. */
@@ -56,6 +54,8 @@ const exportOffice = (): OfficeFile => {
     version: 1,
     exportedAt: new Date().toISOString(),
     roles: store.listRoles(),
+    handbook: store.getHandbook() || undefined,
+    layout: { desks: store.getLayout().desks, rooms: store.getLayout().rooms },
     employees: agents.map(a => ({ name: a.name, role: a.role, api: a.api, model: a.model || undefined, avatar: a.avatar })),
     templates: store.listTemplates().map(t => ({
       name: t.name, prompt: t.prompt, budget: t.budget, schedule: t.schedule, weekday: t.weekday, minuteOfDay: t.minuteOfDay,
@@ -76,6 +76,15 @@ const importOffice = (file: unknown) => {
     if (!name || !(rank >= 0 && rank <= MAX_RANK)) continue;
     store.saveRole({ name, rank, instructions: clean(role?.instructions, MAX_INSTRUCTIONS_CHARS) });
     counts.roles += 1;
+  }
+
+  // A handbook is only taken over when this office has none: importing never overwrites
+  if (typeof office.handbook === 'string' && office.handbook.trim() && !store.getHandbook().trim()) store.setHandbook(office.handbook);
+
+  // Desk and room positions come along; the floorplan picture and avatars of this office stay
+  if (office.layout) {
+    const current = store.getLayout();
+    store.setLayout({ ...sanitizeLayout(office.layout), background: current.background, avatars: current.avatars });
   }
 
   const roles = store.listRoles();
@@ -129,10 +138,12 @@ const snapshot = (knownVersion: string | null, afterEvent: number | null) => {
     // What the models are writing right now, and this month's spending: both change without a new version
     live: liveSnapshot(),
     month: monthStatus(),
+    // Whether new tasks start with a plan unless the user says otherwise
+    planFirst: getSetting('planFirst') === 'on',
     // A first request only learns where the event stream stands, so old notifications are not replayed
     events: afterEvent === null ? [] : store.listEvents(afterEvent),
     lastEventId: store.latestEventId(),
-    ...(knownVersion === version ? {} : { agents: overview(store.getState()), roles: store.listRoles(), templates: store.listTemplates() }),
+    ...(knownVersion === version ? {} : { agents: overview(store.getState()), roles: store.listRoles(), templates: store.listTemplates(), handbook: store.getHandbook(), notes: store.listNotes(), layout: store.getLayout() }),
   };
 };
 
@@ -186,7 +197,16 @@ export async function GET(req: NextRequest) {
  *  { action: 'runTemplate', id, agentId? }      assign a saved task now
  *  { action: 'cap', amount }                    monthly spending cap in USD, 0 for none
  *  { action: 'remove', agentId }
- *  { action: 'assign', agentId, prompt, budget?, project?, attachments?, attachedFolder? }
+ *  { action: 'assign', agentId, prompt, budget?, project?, attachments?, attachedFolder?, plan? }
+ *  { action: 'compare', agentId, prompt, budget?, candidates: [{ api, model? }, …] }
+ *      run the same request on two or three models, each in its own project, to compare them
+ *  { action: 'approvePlan', taskId, plan? }   start the work; `plan` replaces the proposed plan with an edited one
+ *  { action: 'rejectPlan', taskId, note }     ask for a different plan
+ *  { action: 'steer', taskId, text }          say something to an employee while their task runs
+ *  { action: 'layout', layout }                where the desks and rooms are, the floorplan and the uploaded avatars
+ *  { action: 'deleteProject', project }        delete a project's folder and every task that worked on it
+ *  { action: 'handbook', text }               the company handbook every agent is given
+ *  { action: 'removeNote', id }               delete a note an agent saved
  *      budget in USD; project continues an existing one; attachments are { path, data (base64) }
  *  { action: 'retry', taskId }       a failed or cancelled task
  *  { action: 'revise', taskId, note } send a finished task back with feedback
@@ -209,7 +229,7 @@ export async function POST(req: NextRequest) {
         if (!name) return badRequest('Missing name');
         if (!store.listRoles().some(r => r.name === body.role)) return badRequest('Unknown role');
         if (!PROVIDERS.includes(body.api)) return badRequest('Unknown API provider');
-        const avatar = typeof body.avatar === 'string' && /^\/avatars\/[a-z0-9_-]+\.png$/i.test(body.avatar) ? body.avatar : '/avatars/robot.png';
+        const avatar = typeof body.avatar === 'string' && AVATAR.test(body.avatar) ? body.avatar : '/avatars/robot.png';
         const model = typeof body.model === 'string' ? body.model.trim().slice(0, MAX_MODEL_CHARS) : '';
         store.createAgent({ name, role: body.role, api: body.api, avatar, model });
         break;
@@ -304,7 +324,9 @@ export async function POST(req: NextRequest) {
         const attachments: Attachment[] = Array.isArray(body.attachments) ? body.attachments : [];
         if (attachments.length > ATTACHMENT_LIMITS.files) return badRequest(`At most ${ATTACHMENT_LIMITS.files} files can be attached.`);
 
-        const taskId = store.createTask(body.agentId, prompt, 'User', { budget, project, status: attachments.length ? 'AWAITING_APPROVAL' : 'PENDING' });
+        // With `plan` the employee first proposes a plan and waits for it to be approved
+        const needsPlan = body.plan === undefined ? getSetting('planFirst') === 'on' : Boolean(body.plan);
+        const taskId = store.createTask(body.agentId, prompt, 'User', { budget, project, needsPlan, status: attachments.length ? 'AWAITING_APPROVAL' : 'PENDING' });
         if (attachments.length) {
           // Held back until the files are stored, so the engine cannot start the task without them
           try {
@@ -318,50 +340,84 @@ export async function POST(req: NextRequest) {
         }
         break;
       }
-      case 'retry': {
-        if (typeof body.taskId !== 'string') return badRequest('Missing taskId');
-        const reset = { response: '', reviewNote: undefined };
-        const retried = store.transitionTask(body.taskId, 'FAILED', 'PENDING', reset) || store.transitionTask(body.taskId, 'CANCELLED', 'PENDING', reset);
-        if (!retried) return badRequest('Only failed or cancelled tasks can be retried');
-        reopenProject(body.taskId);
-        break;
-      }
-      case 'revise': {
-        if (typeof body.taskId !== 'string') return badRequest('Missing taskId');
-        const note = typeof body.note === 'string' ? body.note.trim().slice(0, MAX_NOTE_CHARS) : '';
-        if (!note) return badRequest('Say what should be changed');
-        if (!store.transitionTask(body.taskId, 'COMPLETED', 'PENDING', { reviewStatus: 'CHANGES_REQUESTED', feedback: note })) {
-          return badRequest('Only finished tasks can be sent back');
-        }
-        reopenProject(body.taskId);
-        break;
-      }
-      case 'cancel': {
-        if (typeof body.taskId !== 'string') return badRequest('Missing taskId');
-        const cancelled = store.transitionTask(body.taskId, 'PENDING', 'CANCELLED')
-          || store.transitionTask(body.taskId, 'AWAITING_APPROVAL', 'CANCELLED')
-          || store.transitionTask(body.taskId, 'WAITING_FOR_INPUT', 'CANCELLED');
-        if (!cancelled) return badRequest('Only tasks that have not started can be cancelled');
-        break;
-      }
+      case 'retry':
+      case 'revise':
+      case 'cancel':
       case 'approve':
-        if (typeof body.taskId !== 'string') return badRequest('Missing taskId');
-        if (!store.transitionTask(body.taskId, 'AWAITING_APPROVAL', 'PENDING', { reviewStatus: 'APPROVED' })) {
-          return badRequest('This task is not waiting for approval');
-        }
-        break;
+      case 'approvePlan':
+      case 'rejectPlan':
       case 'answer': {
         if (typeof body.taskId !== 'string') return badRequest('Missing taskId');
-        const text = typeof body.text === 'string' ? body.text.trim().slice(0, MAX_NOTE_CHARS) : '';
-        if (!text) return badRequest('Write an answer');
-        const task = store.getTask(body.taskId);
-        if (!task || task.status !== 'WAITING_FOR_INPUT') return badRequest('This task is not waiting for an answer');
-        store.transitionTask(body.taskId, 'WAITING_FOR_INPUT', 'PENDING', {
-          clarifications: `${task.clarifications ? `${task.clarifications}\n` : ''}Q: ${task.question || ''}\nA: ${text}\n`,
-          question: undefined,
-        });
+        const problem =
+          body.action === 'retry' ? actions.retryTask(body.taskId)
+            : body.action === 'revise' ? actions.reviseTask(body.taskId, body.note)
+              : body.action === 'cancel' ? actions.cancelTask(body.taskId)
+                : body.action === 'approve' ? actions.approveTask(body.taskId)
+                  : body.action === 'approvePlan' ? actions.approvePlan(body.taskId, body.plan)
+                    : body.action === 'rejectPlan' ? actions.rejectPlan(body.taskId, body.note)
+                      : actions.answerQuestion(body.taskId, body.text);
+        if (problem) return badRequest(problem);
         break;
       }
+      case 'compare': {
+        const prompt = clean(body.prompt, MAX_PROMPT_CHARS);
+        if (!prompt) return badRequest('Missing prompt');
+        if (!store.getState().some(a => a.id === body.agentId)) return badRequest('Unknown employee');
+
+        const candidates: { api: APIProvider; model: string }[] = [];
+        for (const candidate of Array.isArray(body.candidates) ? body.candidates.slice(0, 3) : []) {
+          if (!PROVIDERS.includes(candidate?.api)) return badRequest('Unknown API provider');
+          const model = clean(candidate.model, MAX_MODEL_CHARS);
+          if (!candidates.some(c => c.api === candidate.api && c.model === model)) candidates.push({ api: candidate.api, model });
+        }
+        if (candidates.length < 2) return badRequest('Choose at least two different models to compare');
+
+        let budget: number | undefined;
+        if (Number(body.budget) > 0) budget = Math.min(Number(body.budget), OFFICE_CONFIG.MAX_TASK_BUDGET_USD);
+
+        // One task per model, all with the same request. They run one after the other on this employee.
+        const compareId = `cmp${Date.now().toString(36)}`;
+        for (const candidate of candidates) {
+          store.createTask(body.agentId, prompt, 'User', { budget, compareId, apiOverride: candidate.api, modelOverride: candidate.model, needsPlan: false });
+        }
+        break;
+      }
+      case 'steer': {
+        const message = clean(body.text, MAX_NOTE_CHARS);
+        if (typeof body.taskId !== 'string' || !message) return badRequest('Write a message');
+        if (!steerTask(body.taskId, message)) {
+          return badRequest('This task cannot take a message right now: it is not running, or its model answers in one go.');
+        }
+        break;
+      }
+      case 'layout': {
+        // Pictures that are no longer used are removed from disk with the change
+        const before = store.getLayout();
+        const next = sanitizeLayout(body.layout);
+        const stillUsed = new Set([next.background, ...next.avatars, ...store.getState().map(a => a.avatar)]);
+        for (const url of [before.background, ...before.avatars]) if (url && !stillUsed.has(url)) deleteMedia(url);
+        store.setLayout(next);
+        break;
+      }
+      case 'deleteProject': {
+        const project = safeProject(body.project);
+        if (!project || !projectExists(project)) return badRequest('Unknown project');
+        const agents = store.getState();
+        const index = indexTasks(agents);
+        const trees = agents.flatMap(a => a.taskQueue).filter(t => !t.parentId && t.project === project).map(root => getTree(root.id, index).map(ref => ref.task));
+        if (trees.flat().some(t => !FINISHED_STATUSES.has(t.status))) return badRequest('A task of this project is still going. Cancel or halt it first.');
+        store.deleteTasks(trees.flat().map(t => t.id), startOfMonth(Date.now()));
+        deleteProject(project);
+        break;
+      }
+      case 'handbook':
+        if (typeof body.text !== 'string') return badRequest('Missing text');
+        store.setHandbook(body.text.trim());
+        break;
+      case 'removeNote':
+        if (typeof body.id !== 'string') return badRequest('Missing note');
+        store.deleteNote(body.id);
+        break;
       case 'role': {
         const name = typeof body.name === 'string' ? body.name.trim().slice(0, MAX_ROLE_CHARS) : '';
         if (!name) return badRequest('Missing role name');

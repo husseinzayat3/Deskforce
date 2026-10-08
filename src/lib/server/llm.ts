@@ -93,14 +93,25 @@ interface StepInput {
   maxTokens: number;
   /** Let the model use the provider's own web search (Claude only). */
   nativeWeb: boolean;
+  /**
+   * Set for a conversation that will be sent again with more turns (a tool loop): the provider is
+   * asked to cache it, so each further step pays a fraction for what was already sent. The value
+   * identifies the conversation.
+   */
+  cacheKey?: string;
 }
 
 interface StepOutput {
   text: string;
   toolCalls: ToolCall[];
   raw?: unknown;
+  /** Input billed at the full price: what was neither read from nor written to the cache. */
   inputTokens: number;
   outputTokens: number;
+  /** Input the provider had cached from an earlier step, billed at a fraction. */
+  cacheReadTokens?: number;
+  /** Input written to the cache by this step (Claude bills this slightly above the full price). */
+  cacheWriteTokens?: number;
   /** The model stopped because it ran out of room, not because it was done. */
   truncated: boolean;
   /** Model that actually answered, when the provider reports one different from the request. */
@@ -138,7 +149,7 @@ async function* readLines(res: Response) {
 
 // --- OpenAI and compatible (Grok) ------------------------------------------------
 
-const openAiCompatible = (client: OpenAI, model: string, tokenParam: 'max_tokens' | 'max_completion_tokens'): Adapter => async ({ system, turns, tools, maxTokens }, { onText, beat, signal }) => {
+const openAiCompatible = (client: OpenAI, model: string, tokenParam: 'max_tokens' | 'max_completion_tokens', cacheKeys = false): Adapter => async ({ system, turns, tools, maxTokens, cacheKey }, { onText, beat, signal }) => {
   const messages: any[] = [];
   if (system) messages.push({ role: 'system', content: system });
   for (const turn of turns) {
@@ -169,11 +180,13 @@ const openAiCompatible = (client: OpenAI, model: string, tokenParam: 'max_tokens
     stream: true,
     stream_options: { include_usage: true },
     ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}),
+    // These providers cache a repeated prompt start by themselves; the key keeps a conversation's steps together
+    ...(cacheKeys && cacheKey ? { prompt_cache_key: cacheKey } : {}),
   } as any, { signal }) as unknown as AsyncIterable<any>;
 
   let text = '';
   let finishReason: string | null = null;
-  let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+  let usage: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } | undefined;
   // Tool calls arrive in pieces, keyed by their position
   const pending = new Map<number, { id: string; name: string; args: string }>();
 
@@ -203,18 +216,21 @@ const openAiCompatible = (client: OpenAI, model: string, tokenParam: 'max_tokens
     }
   });
 
+  const cached = usage?.prompt_tokens_details?.cached_tokens || 0;
+
   return {
     text,
     toolCalls,
-    inputTokens: usage?.prompt_tokens ?? estimateTokens(system + textOf(turns)),
+    inputTokens: Math.max(0, (usage?.prompt_tokens ?? estimateTokens(system + textOf(turns))) - cached),
     outputTokens: usage?.completion_tokens ?? estimateTokens(text),
+    cacheReadTokens: cached,
     truncated: finishReason === 'length',
   };
 };
 
 // --- Anthropic ------------------------------------------------------------------
 
-const anthropic = (client: Anthropic, model: string): Adapter => async ({ system, turns, tools, maxTokens, nativeWeb }, { onText, beat, signal }) => {
+const anthropic = (client: Anthropic, model: string): Adapter => async ({ system, turns, tools, maxTokens, nativeWeb, cacheKey }, { onText, beat, signal }) => {
   const messages: any[] = [];
   for (const turn of turns) {
     if (turn.role === 'user') {
@@ -247,7 +263,10 @@ const anthropic = (client: Anthropic, model: string): Adapter => async ({ system
   const params: any = {
     model,
     max_tokens: Math.max(maxTokens, THINKING_HEADROOM_TOKENS),
-    ...(system ? { system } : {}),
+    // In a loop: one marker after the tools and system prompt, which never change within a task, and the
+    // request-level setting, which moves the cached part forward as the conversation grows.
+    ...(system ? { system: cacheKey ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] : system } : {}),
+    ...(cacheKey ? { cache_control: { type: 'ephemeral' } } : {}),
     ...(allTools.length ? { tools: allTools } : {}),
     messages,
   };
@@ -255,6 +274,8 @@ const anthropic = (client: Anthropic, model: string): Adapter => async ({ system
   try {
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheWriteTokens = 0;
     let message: any;
 
     for (let round = 0; ; round++) {
@@ -265,7 +286,10 @@ const anthropic = (client: Anthropic, model: string): Adapter => async ({ system
         : await client.messages.stream(params, { signal }).on('streamEvent', beat).on('text', onText).finalMessage();
 
       const usage = message.usage;
-      inputTokens += usage.input_tokens + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+      // `input_tokens` is only what was not cached
+      inputTokens += usage.input_tokens;
+      cacheReadTokens += usage.cache_read_input_tokens || 0;
+      cacheWriteTokens += usage.cache_creation_input_tokens || 0;
       outputTokens += usage.output_tokens;
 
       // A long web search can pause the turn; sending it back lets the model carry on
@@ -291,6 +315,8 @@ const anthropic = (client: Anthropic, model: string): Adapter => async ({ system
       raw: message.content,
       inputTokens,
       outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
       truncated: message.stop_reason === 'max_tokens',
       model: message.model,
     };
@@ -338,7 +364,7 @@ const gemini = (apiKey: string, model: string, grounded = false): Adapter => asy
 
   let text = '';
   let finishReason = '';
-  let usage: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } = {};
+  let usage: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number; cachedContentTokenCount?: number } = {};
   const parts: any[] = [];
   const toolCalls: ToolCall[] = [];
   const sources = new Set<string>();
@@ -379,7 +405,9 @@ const gemini = (apiKey: string, model: string, grounded = false): Adapter => asy
     text,
     toolCalls,
     raw: parts,
-    inputTokens: usage.promptTokenCount ?? estimateTokens(system + textOf(turns)),
+    // Gemini caches a repeated prompt start by itself and reports how much it reused
+    inputTokens: Math.max(0, (usage.promptTokenCount ?? estimateTokens(system + textOf(turns))) - (usage.cachedContentTokenCount || 0)),
+    cacheReadTokens: usage.cachedContentTokenCount || 0,
     outputTokens: (usage.candidatesTokenCount ?? estimateTokens(text)) + (usage.thoughtsTokenCount || 0),
     truncated: finishReason === 'MAX_TOKENS',
   };
@@ -491,7 +519,7 @@ const adapterFor = (provider: APIProvider, model: string): Adapter | null => {
   }
   if (provider === 'OpenAI') {
     const apiKey = getSetting('openaiKey');
-    return apiKey ? openAiCompatible(new OpenAI({ apiKey }), model, 'max_completion_tokens') : null;
+    return apiKey ? openAiCompatible(new OpenAI({ apiKey }), model, 'max_completion_tokens', true) : null;
   }
   if (provider === 'Anthropic') {
     const apiKey = getSetting('anthropicKey');
@@ -517,6 +545,8 @@ export interface StepRequest {
   tools?: ToolSpec[];
   maxTokens?: number;
   nativeWeb?: boolean;
+  /** Identifies a conversation that is sent step after step, so the provider can cache it. */
+  cacheKey?: string;
   /** Called with each piece of the answer as it is written. */
   onText?: OnText;
   /** Stops the call, for example when the user halts the office. */
@@ -527,10 +557,12 @@ export interface StepResult {
   text: string;
   toolCalls: ToolCall[];
   raw?: unknown;
-  /** Input + output tokens. */
+  /** Input + output tokens, cached input included. */
   tokens: number;
   inputTokens: number;
   outputTokens: number;
+  /** Input read from the provider's cache, at a fraction of the price. */
+  cachedTokens: number;
   model: string;
   /** Estimated USD; undefined when the model has no known price. */
   cost: number | undefined;
@@ -567,7 +599,7 @@ const guarded = async <T>(label: string, signal: AbortSignal | undefined, work: 
 };
 
 /** One step of a conversation: the model answers with text, tool calls, or both. */
-export const runStep = async ({ provider, model: requestedModel, system = '', turns, tools = [], maxTokens, nativeWeb = false, onText = () => undefined, signal }: StepRequest): Promise<StepResult> => {
+export const runStep = async ({ provider, model: requestedModel, system = '', turns, tools = [], maxTokens, nativeWeb = false, cacheKey, onText = () => undefined, signal }: StepRequest): Promise<StepResult> => {
   const limit = Math.min(Math.max(Math.floor(Number(maxTokens)) || DEFAULT_MAX_TOKENS, 1), MAX_TOKENS_LIMIT);
   const model = requestedModel?.trim() || defaultModel(provider);
   if (!model) throw new Error(`Unknown API provider: ${provider}`);
@@ -579,22 +611,25 @@ export const runStep = async ({ provider, model: requestedModel, system = '', tu
     const lastUser = [...turns].reverse().find(t => t.role === 'user');
     const text = `[Mock ${provider} Response] ${lastUser && 'text' in lastUser ? lastUser.text : ''}`;
     onText(text);
-    return { text, toolCalls: [], tokens: 15, inputTokens: 10, outputTokens: 5, model: 'mock', cost: 0, truncated: false };
+    return { text, toolCalls: [], tokens: 15, inputTokens: 10, outputTokens: 5, cachedTokens: 0, model: 'mock', cost: 0, truncated: false };
   }
 
   const output = await guarded(`${provider} (${model})`, signal, io =>
-    adapter({ system, turns, tools, maxTokens: limit, nativeWeb: nativeWeb && provider === 'Anthropic' }, { onText, ...io })
+    adapter({ system, turns, tools, maxTokens: limit, nativeWeb: nativeWeb && provider === 'Anthropic', cacheKey }, { onText, ...io })
   );
   const answeredBy = output.model || model;
+  const read = output.cacheReadTokens || 0;
+  const written = output.cacheWriteTokens || 0;
   return {
     text: output.text,
     toolCalls: output.toolCalls,
     raw: output.raw,
-    tokens: output.inputTokens + output.outputTokens,
+    tokens: output.inputTokens + read + written + output.outputTokens,
     inputTokens: output.inputTokens,
     outputTokens: output.outputTokens,
+    cachedTokens: read,
     model: answeredBy,
-    cost: estimateCost(provider, answeredBy, output.inputTokens, output.outputTokens),
+    cost: estimateCost(provider, answeredBy, output.inputTokens, output.outputTokens, { read, write: written }),
     truncated: output.truncated,
   };
 };

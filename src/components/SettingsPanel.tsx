@@ -20,11 +20,14 @@ const FIELDS = [
   { name: 'grokModel', label: 'Grok default model', secret: false },
   { name: 'ollamaUrl', label: 'Ollama address', secret: false },
   { name: 'ollamaModel', label: 'Ollama default model', secret: false },
+  { name: 'slackAppToken', label: 'Slack app-level token (xapp-…)', secret: true },
+  { name: 'slackBotToken', label: 'Slack bot token (xoxb-…)', secret: true },
+  { name: 'slackUsers', label: 'Slack user IDs allowed to give instructions', secret: false },
 ] as const;
 
 type FieldName = typeof FIELDS[number]['name'];
 /** On/off settings, saved the moment they are switched. */
-type SwitchName = 'webAccess' | 'allowChecks';
+type SwitchName = 'webAccess' | 'allowChecks' | 'planFirst';
 type Settings = Record<FieldName | SwitchName, SecretInfo | ValueInfo>;
 type Draft = Record<FieldName, string>;
 
@@ -61,9 +64,11 @@ export default function SettingsPanel({ onClose, onSaved, onImport }: { onClose:
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [slack, setSlack] = useState<{ status: string; detail: string } | null>(null);
 
   const show = (data: Settings) => {
     setSettings(data);
+    setSlack((data as unknown as { slack?: { status: string; detail: string } }).slack || null);
     // Keys start empty (their value is never sent to the browser); the rest shows what is in effect
     setDraft(Object.fromEntries(FIELDS.map(f => [f.name, f.secret ? '' : (data[f.name] as ValueInfo).value])) as Draft);
   };
@@ -125,10 +130,21 @@ export default function SettingsPanel({ onClose, onSaved, onImport }: { onClose:
         {!settings && !error && <div style={hintStyle}>Loading…</div>}
 
         {settings && FIELDS.map(({ name, label, secret }) => {
+          const firstSlack = name === 'slackAppToken';
           const info = settings[name];
           const key = secret ? (info as SecretInfo) : null;
           return (
-            <label key={name} style={labelStyle}>
+            <React.Fragment key={name}>
+            {firstSlack && (
+              <>
+                <h4 style={{ margin: '8px 0 0', fontSize: 13 }}>Slack</h4>
+                <span style={hintStyle}>
+                  Talk to the office from Slack: message the app, and your most senior employee answers, starts tasks, and tells you when a plan, a question or a report is waiting.
+                  The README has the five-minute setup. Status: <strong style={{ color: slack?.status === 'connected' ? '#006300' : slack?.status === 'error' ? '#b91c1c' : '#64748b' }}>{slack?.detail || 'Not set up'}</strong>
+                </span>
+              </>
+            )}
+            <label style={labelStyle}>
               {label}
               <input
                 type={secret ? 'password' : 'text'}
@@ -136,11 +152,11 @@ export default function SettingsPanel({ onClose, onSaved, onImport }: { onClose:
                 spellCheck={false}
                 className={styles.input}
                 value={draft[name]}
-                placeholder={key ? (key.set ? `Saved (${key.hint}) — type to replace` : 'Not set: this provider answers with mock text') : ''}
+                placeholder={key ? (key.set ? `Saved (${key.hint}) — type to replace` : name.startsWith('slack') ? 'Not set' : 'Not set: this provider answers with mock text') : name === 'slackUsers' ? 'For example U012AB3CD, U045EF6GH' : ''}
                 onChange={e => setDraft(prev => ({ ...prev, [name]: e.target.value }))}
               />
               <span style={hintStyle}>
-                {info.source === 'app' ? 'Saved in the app.' : info.source === 'environment' ? 'Taken from the environment (.env.local).' : key ? '' : 'Default value.'}
+                {info.source === 'app' ? 'Saved in the app.' : info.source === 'environment' ? 'Taken from the environment (.env.local).' : key || name === 'slackUsers' ? '' : 'Default value.'}
                 {key && info.source === 'app' && (
                   <button type="button" onClick={() => save({ [name]: '' })} disabled={saving} style={{ marginLeft: 6, border: 'none', background: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 11, padding: 0 }}>
                     Remove key
@@ -148,11 +164,23 @@ export default function SettingsPanel({ onClose, onSaved, onImport }: { onClose:
                 )}
               </span>
             </label>
+            </React.Fragment>
           );
         })}
 
         {settings && (
           <>
+            <h4 style={{ margin: '8px 0 0', fontSize: 13 }}>How tasks start</h4>
+            <label style={{ ...labelStyle, flexDirection: 'row', alignItems: 'flex-start', gap: 8, fontWeight: 400 }}>
+              <input type="checkbox" checked={(settings.planFirst as ValueInfo).value === 'on'} disabled={saving} onChange={e => save({ planFirst: e.target.checked ? 'on' : 'off' })} />
+              <span>
+                <strong>Plan first</strong>
+                <span style={{ ...hintStyle, display: 'block' }}>
+                  A new task starts with the employee proposing a plan and a cost estimate, and waits for you to approve it. You can still choose per task. Scheduled tasks never wait for a plan.
+                </span>
+              </span>
+            </label>
+
             <h4 style={{ margin: '8px 0 0', fontSize: 13 }}>What agents may do</h4>
             <label style={{ ...labelStyle, flexDirection: 'row', alignItems: 'flex-start', gap: 8, fontWeight: 400 }}>
               <input type="checkbox" checked={(settings.webAccess as ValueInfo).value === 'on'} disabled={saving} onChange={e => save({ webAccess: e.target.checked ? 'on' : 'off' })} />

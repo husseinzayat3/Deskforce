@@ -119,6 +119,35 @@ export const deleteProjectFile = (project: string, relPath: string) => {
   return true;
 };
 
+export interface ProjectInfo {
+  name: string;
+  /** Files the agents wrote (caches and history left out). */
+  files: number;
+  /** When a file in it last changed. */
+  updatedAt: number;
+  canPreview: boolean;
+}
+
+/** Every project folder, most recently changed first. */
+export const listProjects = (): ProjectInfo[] => {
+  if (!fs.existsSync(/* turbopackIgnore: true */ PROJECTS_DIR)) return [];
+  return fs.readdirSync(/* turbopackIgnore: true */ PROJECTS_DIR, { withFileTypes: true })
+    .filter(entry => entry.isDirectory() && safeProject(entry.name))
+    .map(entry => {
+      const dir = projectDirOf(entry.name);
+      const files = listDir(dir);
+      const updatedAt = files.reduce((latest, file) => {
+        try {
+          return Math.max(latest, fs.statSync(/* turbopackIgnore: true */ path.join(/* turbopackIgnore: true */ dir, file)).mtimeMs);
+        } catch {
+          return latest;
+        }
+      }, fs.statSync(/* turbopackIgnore: true */ dir).mtimeMs);
+      return { name: entry.name, files: files.length, updatedAt: Math.round(updatedAt), canPreview: Boolean(previewEntry(entry.name)) };
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+};
+
 /** Removes a project folder with everything in it, history included. */
 export const deleteProject = (project: string) => {
   fs.rmSync(/* turbopackIgnore: true */ projectDirOf(project), { recursive: true, force: true });

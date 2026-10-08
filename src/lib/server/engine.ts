@@ -1,9 +1,9 @@
 import { Agent, Role, TaskItem } from '../types';
-import { OFFICE_CONFIG, FINISHED_STATUSES, TaskRef, rankOf, startOfMonth, taskTitle, budgetOf, cleanPrompt, formatBudget, indexTasks, getAncestors, getRoot, getTree, projectOf, projectNameFromPrompt, slugifyProjectName, similarity, spentOn, stripGuardrailNote, titleFromDescription } from '../officeConfig';
-import { buildSystemPrompt, FILE_PATH_PLACEHOLDER, PROJECT_NAME_PLACEHOLDER, REVIEW_TASK_PROMPT } from '../agentPrompt';
+import { OFFICE_CONFIG, FINISHED_STATUSES, TaskRef, STEP_TOKENS, delegationDepth, estimateCost, rankOf, startOfMonth, taskTitle, budgetOf, cleanPrompt, formatBudget, indexTasks, getAncestors, getRoot, getTree, projectOf, projectNameFromPrompt, slugifyProjectName, similarity, spentOn, stripGuardrailNote, titleFromDescription } from '../officeConfig';
+import { buildSystemPrompt, stripTags, FILE_PATH_PLACEHOLDER, PROJECT_NAME_PLACEHOLDER, REVIEW_TASK_PROMPT } from '../agentPrompt';
 import { buildReport, buildTranscript, reportFilename, transcriptFilename } from '../report';
 import * as store from './store';
-import { ToolsUnsupportedError, addCost, hasRealModel, runModel, searchProviderFor, searchWeb } from './llm';
+import { ToolsUnsupportedError, addCost, defaultModel, hasRealModel, runModel, searchProviderFor, searchWeb } from './llm';
 import { AgentTool, runAgent } from './agent';
 import { applyEdit } from '../edits';
 import { fetchPage } from './web';
@@ -13,6 +13,7 @@ import { attachedImages, deleteProjectFile, installAttachments, listProjectFiles
 import { authorFor, commitProject } from './git';
 import { appendLive, endLive, startLive } from './live';
 import { nextRunTime } from '../schedule';
+import { ensureSlack, postToSlack, slackHome } from './slack';
 import { parseFileBlocks } from '../fileBlocks';
 
 /**
@@ -54,13 +55,16 @@ interface EngineState {
   idleKey?: string;
   /** Root tasks whose project checks are running right now. */
   verifying: Set<string>;
+  /** Task id → messages the user sent to it while it runs. Only tasks that can take them are listed. */
+  inbox: Map<string, string[]>;
 }
 
 const globalForEngine = globalThis as unknown as { __officeEngine?: EngineState };
-const engine: EngineState = (globalForEngine.__officeEngine ??= { running: new Map(), cooldown: new Map(), aborts: new Map(), verifying: new Set() });
+const engine: EngineState = (globalForEngine.__officeEngine ??= { running: new Map(), cooldown: new Map(), aborts: new Map(), verifying: new Set(), inbox: new Map() });
 // An engine kept across a development reload may predate this field
 engine.aborts ??= new Map();
 engine.verifying ??= new Set();
+engine.inbox ??= new Map();
 
 /** Marks a task as running and returns the signal that stops its model calls. */
 const begin = (taskId: string, agentId: string) => {
@@ -72,7 +76,19 @@ const begin = (taskId: string, agentId: string) => {
   return controller.signal;
 };
 
+/**
+ * Passes a message from the user to a task that is running. False when the task cannot take
+ * one: it is not running, or its model works in a single answer with no steps in between.
+ */
+export const steerTask = (taskId: string, message: string) => {
+  const waiting = engine.inbox.get(taskId);
+  if (!waiting) return false;
+  waiting.push(message);
+  return true;
+};
+
 const finish = (taskId: string, agentId: string) => {
+  engine.inbox.delete(taskId);
   endLive(taskId);
   engine.aborts.delete(taskId);
   engine.running.delete(taskId);
@@ -243,7 +259,10 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
   const isRoot = rootTask.id === task.id;
   let slug = isRoot && !task.project ? '' : projectOf(rootTask);
   const ancestors = getAncestors(task.id, taskIndex);
-  const depth = ancestors.length;
+  const depth = delegationDepth(task.id, taskIndex);
+  const isFollowUp = task.kind === 'FOLLOWUP';
+  // Whoever handed this work down: for a follow-up, that is above the manager's own task
+  const manager = ancestors.find(ref => ref.agent.id !== agent.id && ref.task.kind !== 'FOLLOWUP');
   const tree = getTree(rootTask.id, taskIndex);
   const budget = budgetOf(rootTask);
   const spent = spentOn(tree);
@@ -251,6 +270,11 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
   const budgetNote = (extra = 0) => `Budget of ${formatBudget(budget)} reached ($${(spent + extra).toFixed(4)} spent).`;
 
   if (task.kind === 'MEETING') return holdMeeting(agent, task, agents, overBudget());
+
+  // A comparison runs the request on the model being tried out, in this employee's name and role
+  // (no model named = that provider's default, not the employee's own model)
+  const worker: Agent = task.compareId && task.apiOverride ? { ...agent, api: task.apiOverride, model: task.modelOverride || '' } : agent;
+  const startedAt = Date.now();
 
   // Sub-tasks queued before the tree ran out of budget wait for approval instead of running
   if (task.parentId && !isReview && task.reviewStatus !== 'APPROVED' && overBudget()) {
@@ -278,6 +302,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     let tokens = 0;
     let cost: number | undefined = 0;
     let model = '';
+    let cachedTokens = 0;
     let question: string | undefined;
     let changed = false;
     const writtenFiles: string[] = [];
@@ -328,25 +353,33 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     }
 
     // Only offer colleagues this agent is actually allowed to delegate to
-    const canDelegate = !isReview && depth < OFFICE_CONFIG.MAX_DELEGATION_DEPTH;
+    // A comparison is one model working alone, so the result says something about that model
+    const canDelegate = !isReview && !task.compareId && depth < OFFICE_CONFIG.MAX_DELEGATION_DEPTH;
     const colleagues = canDelegate
       ? agents.filter(a => a.id !== agent.id && rankOf(roles, a.role) > rankOf(roles, agent.role))
       : [];
 
-    const canAsk = !isReview && (task.clarifications?.match(/^Q: /gm) || []).length < MAX_QUESTIONS_PER_TASK;
+    const canAsk = !isReview && !task.compareId && (task.clarifications?.match(/^Q: /gm) || []).length < MAX_QUESTIONS_PER_TASK;
     // The plan from a meeting this employee took part in, if one was held for this piece of work
     const meetingPlan = tree
       .filter(ref => ref.task.kind === 'MEETING' && ref.task.status === 'COMPLETED' && ref.task.parentId === task.parentId && ref.task.participants?.includes(agent.id))
       .sort((a, b) => b.task.timestamp - a.task.timestamp)[0]?.task.summary;
 
-    const modelKey = `${agent.api}:${agent.model || ''}`;
+    const modelKey = `${worker.api}:${worker.model || ''}`;
     const webOn = getSetting('webAccess') === 'on';
-    const canSearch = webOn && (agent.api === 'Anthropic' || searchProviderFor(agent.api) !== null);
+    const canSearch = webOn && (worker.api === 'Anthropic' || searchProviderFor(worker.api) !== null);
     const canRunChecks = checksAllowed();
     const images = isRoot && slug ? attachedImages(slug, rootTask.attachments) : [];
 
-    const systemPromptFor = (mode: 'tools' | 'tags') => buildSystemPrompt({
-      agent, task, rootTask, parent: ancestors[0], tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents,
+    const handbook = store.getHandbook();
+    const notes = store.listNotes().map(n => `${n.text} (${n.author}${n.project ? `, ${n.project}` : ''})`);
+    // The manager can be asked as long as they are still in the office
+    const canAskManager = Boolean(manager && agents.some(a => a.id === manager.agent.id));
+
+    const systemPromptFor = (mode: 'tools' | 'tags', phase?: 'plan') => buildSystemPrompt({
+      handbook, notes, isFollowUp, phase,
+      canAskManager: mode === 'tools' && canAskManager,
+      agent, task, rootTask, parent: manager, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents,
       projectHistory: projectHistoryOf(rootTask, agents, taskIndex),
       roleInstructions: roles.find(r => r.name === agent.role)?.instructions || '',
       canAsk,
@@ -360,9 +393,53 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     const prompt = stripGuardrailNote(task.prompt);
     const onText = (delta: string) => appendLive(task.id, delta);
 
+    // The user asked to see a plan first: propose one and wait. No work is done and nothing is written.
+    if (isRoot && task.needsPlan && !task.planApproved) {
+      const proposal = await runModel({ provider: worker.api, model: worker.model, prompt, systemPrompt: systemPromptFor('tags', 'plan'), images, maxTokens: 1500, onText, signal });
+      if (proposal.tokens) store.addAgentTokens(agent.id, proposal.tokens);
+      if (wasCancelled()) return;
+      if (!proposal.response.trim()) throw new Error('The model returned an empty plan.');
+
+      const SIZE_WORDS: Record<string, string> = { S: 'small', M: 'medium', L: 'large' };
+      const steps: { who: Agent; size: string; what: string }[] = [];
+      const stepPattern = /\[STEP:\s*([^|\]\n]+?)\s*\|\s*([SML])\s*\]\s*([^\n]+)/gi;
+      let step;
+      while ((step = stepPattern.exec(proposal.response)) !== null) {
+        const name = step[1].trim().toLowerCase();
+        const who = colleagues.find(a => a.id.toLowerCase() === name || a.name.toLowerCase() === name) || agent;
+        steps.push({ who, size: step[2].toUpperCase(), what: step[3].trim() });
+      }
+
+      // A rough figure from the size of each step and the price of the model that will do it
+      const delegated = steps.some(s => s.who.id !== agent.id);
+      const planned = [...steps, ...(delegated ? [{ who: agent, size: 'M', what: 'review' }] : [])];
+      let estimate: number | undefined = steps.length > 0 ? 0 : undefined;
+      for (const item of planned) {
+        const tokens = STEP_TOKENS[item.size];
+        estimate = addCost(estimate, estimateCost(item.who.api, item.who.model || defaultModel(item.who.api), tokens * 0.85, tokens * 0.15));
+      }
+
+      const body = (proposal.response.match(/\[PLAN\]([\s\S]*?)\[\/PLAN\]/i)?.[1] || proposal.response.replace(stepPattern, '').replace(/\[\/?PLAN\]/gi, '')).trim();
+      const whoDoesWhat = steps.map(s => `- ${s.who.name} (${s.who.role}): ${s.what} — ${SIZE_WORDS[s.size]}`).join('\n');
+
+      store.updateTask(task.id, {
+        status: 'PLAN_REVIEW',
+        plan: `${body}${whoDoesWhat ? `\n\nWho does what:\n${whoDoesWhat}` : ''}`,
+        planEstimate: estimate,
+        planNote: undefined,
+        tokens: (task.tokens || 0) + proposal.tokens,
+        cost: addCost(task.tokens ? task.cost : 0, proposal.cost),
+        model: proposal.model,
+      });
+      store.pushEvent(`${agent.name} has a plan for you to approve.`, 'question');
+      return;
+    }
+
     /** The model works by calling functions: files are read and written as it goes. */
     const workWithTools = async () => {
-      const used = { searches: 0, fetches: 0, checks: 0 };
+      const used = { searches: 0, fetches: 0, checks: 0, managerQuestions: 0, notes: 0, posts: 0 };
+      // From here on the task takes messages from the user
+      engine.inbox.set(task.id, []);
       const tools: AgentTool[] = [];
       const pathParam = { type: 'string', description: 'Path of the file inside the project, for example lib/main.dart' };
 
@@ -484,7 +561,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       }
 
       // Claude searches with its provider's own tools; the others get these
-      if (webOn && agent.api !== 'Anthropic') {
+      if (webOn && worker.api !== 'Anthropic') {
         if (canSearch) {
           tools.push({
             name: 'web_search',
@@ -493,7 +570,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
             describe: input => `searched the web: ${text(input.query).slice(0, 80)}`,
             run: async input => {
               if (++used.searches > MAX_SEARCHES_PER_TASK) throw new Error('No more searches for this task. Work with what you have.');
-              const found = await searchWeb(text(input.query), agent.api, signal);
+              const found = await searchWeb(text(input.query), worker.api, signal);
               return { output: found.answer, tokens: found.tokens, cost: found.cost };
             },
           });
@@ -506,6 +583,73 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
           run: async input => {
             if (++used.fetches > MAX_FETCHES_PER_TASK) throw new Error('No more pages for this task. Work with what you have.');
             return { output: await fetchPage(text(input.url), signal) };
+          },
+        });
+      }
+
+      if (canAskManager && manager) {
+        const boss = manager.agent;
+        tools.push({
+          name: 'ask_manager',
+          description: `Asks ${boss.name}, who assigned this task, a question and returns the answer straight away. For anything unclear in the assignment or a decision that is theirs to make.`,
+          parameters: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
+          describe: input => `asked ${boss.name}: ${text(input.question).slice(0, 120)}`,
+          run: async input => {
+            const asked = text(input.question).trim();
+            if (!asked) throw new Error('question is missing.');
+            if (++used.managerQuestions > OFFICE_CONFIG.MAX_MANAGER_QUESTIONS) throw new Error(`${boss.name} has no more time for questions on this task. Decide yourself and say what you assumed in your summary.`);
+
+            // A short call in the manager's name, with what the manager knows about this piece of work
+            const answer = await runModel({
+              provider: boss.api,
+              model: boss.model,
+              signal,
+              maxTokens: 500,
+              systemPrompt:
+                `You are ${boss.name}, the ${boss.role}. ${agent.name} (${agent.role}) is working on a task you assigned and has a question. ` +
+                `Answer in a few sentences with a clear decision, so they can carry on. If only the client can answer, say exactly that.\n\n` +
+                (handbook.trim() ? `Company handbook:\n${handbook.trim().slice(0, OFFICE_CONFIG.HANDBOOK_CHARS)}\n\n` : '') +
+                `The client's request:\n${cleanPrompt(rootTask.prompt)}\n\n` +
+                (rootTask.planApproved && rootTask.plan ? `The plan the client approved:\n${rootTask.plan}\n\n` : '') +
+                (manager.task.response ? `What you wrote when you planned this work:\n${stripTags(manager.task.response).slice(0, OFFICE_CONFIG.PLAN_CHARS)}\n\n` : '') +
+                `The task you gave ${agent.name}:\n${cleanPrompt(task.prompt)}\n\n` +
+                `Files in the project now:\n${(slug ? listProjectFiles(slug) : []).slice(0, OFFICE_CONFIG.MAX_FILES_IN_PROMPT).join('\n') || '(none yet)'}`,
+              prompt: asked,
+            });
+            if (answer.tokens) store.addAgentTokens(boss.id, answer.tokens);
+            appendLive(task.id, `\n${boss.name}: ${answer.response.trim()}\n`);
+            return { output: `${boss.name} answers: ${answer.response.trim() || '(no answer)'}`, tokens: answer.tokens, cost: answer.cost };
+          },
+        });
+      }
+
+      tools.push({
+        name: 'save_note',
+        description: 'Writes down one lasting lesson for future projects: a convention the client wants, a mistake to avoid, a decision worth repeating. Not for describing what you did.',
+        parameters: { type: 'object', properties: { note: { type: 'string', description: 'One sentence' } }, required: ['note'] },
+        describe: input => `noted for future projects: ${text(input.note).slice(0, 120)}`,
+        run: input => {
+          const lesson = text(input.note).replace(/\s+/g, ' ').trim();
+          if (!lesson) throw new Error('note is missing.');
+          if (++used.notes > OFFICE_CONFIG.MAX_NOTES_PER_TASK) throw new Error('Enough notes for one task.');
+          store.addNote(lesson, agent.name, slug || undefined);
+          return { output: 'Noted.' };
+        },
+      });
+
+      // Connected to Slack, and the client has written there: progress can be reported to them
+      if (slackHome()) {
+        tools.push({
+          name: 'post_to_slack',
+          description: 'Posts a short message to the client in Slack: a milestone reached, or something they should know before the task is done. Not for questions; use ask_client for those.',
+          parameters: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
+          describe: input => `posted to Slack: ${text(input.message).slice(0, 100)}`,
+          run: async input => {
+            const message = text(input.message).trim();
+            if (!message) throw new Error('message is missing.');
+            if (++used.posts > 3) throw new Error('Enough messages for one task. The client is told when the task is done.');
+            await postToSlack(slackHome(), `${agent.name}: ${message}`);
+            return { output: 'Posted.' };
           },
         });
       }
@@ -525,14 +669,16 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       }
 
       const run = await runAgent({
-        provider: agent.api,
-        model: agent.model,
+        provider: worker.api,
+        model: worker.model,
         system: systemPromptFor('tools'),
         prompt,
         images,
         tools,
-        nativeWeb: canSearch && agent.api === 'Anthropic',
+        nativeWeb: canSearch && worker.api === 'Anthropic',
+        cacheKey: `office-${task.id}`,
         overBudget: extra => overBudget(extra),
+        inbox: () => (engine.inbox.get(task.id) || []).splice(0),
         onText,
         signal,
       });
@@ -540,6 +686,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       response = run.transcript;
       summary = run.finalText || undefined;
       tokens = run.tokens;
+      cachedTokens = run.cachedTokens;
       cost = run.cost;
       model = run.model;
       problems.push(...run.problems);
@@ -550,8 +697,8 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     const workWithTags = async () => {
       const systemPrompt = systemPromptFor('tags');
       const result = await runModel({
-        provider: agent.api,
-        model: agent.model,
+        provider: worker.api,
+        model: worker.model,
         prompt,
         systemPrompt,
         images,
@@ -578,8 +725,8 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       for (const path of toRepair.slice(0, OFFICE_CONFIG.MAX_FILE_REPAIRS)) {
         try {
           const repair = await runModel({
-            provider: agent.api,
-            model: agent.model,
+            provider: worker.api,
+            model: worker.model,
             systemPrompt,
             history: [{ role: 'user', content: prompt }, { role: 'assistant', content: result.response }],
             signal,
@@ -626,7 +773,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       }
     };
 
-    if (hasRealModel(agent.api) && !withoutTools.has(modelKey)) {
+    if (hasRealModel(worker.api) && !withoutTools.has(modelKey)) {
       try {
         await workWithTools();
       } catch (e) {
@@ -660,6 +807,7 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     const usage = {
       // A task that was sent back keeps what its first attempt used
       tokens: (task.tokens || 0) + tokens,
+      cachedTokens: (task.cachedTokens || 0) + cachedTokens || undefined,
       cost: addCost(task.tokens ? task.cost : 0, cost),
       model,
       files: writtenFiles.length > 0 ? writtenFiles : undefined,
@@ -770,8 +918,43 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     // Do not hammer a provider that just asked us to slow down
     if (isRateLimit) engine.cooldown.set(agent.id, Date.now() + RATE_LIMIT_COOLDOWN_MS);
   } finally {
+    // Time the model spent on it, over every attempt
+    if (store.getTask(task.id)) store.updateTask(task.id, { durationMs: (task.durationMs || 0) + (Date.now() - startedAt) });
     finish(task.id, agent.id);
   }
+};
+
+const FOLLOWUP_PROMPT = 'Your team has finished what you delegated. Check that their work fits together and delivers what you planned, and deal with anything that is missing.';
+
+/**
+ * Shows a manager what its team delivered. Once everything a task delegated has finished, its
+ * owner gets a follow-up task: it reads the results, fixes gaps, and may delegate one more round.
+ * Returns true when a follow-up was queued.
+ */
+const followUps = (agents: Agent[]) => {
+  if (OFFICE_CONFIG.FOLLOWUP_ROUNDS < 1) return false;
+  const taskIndex = indexTasks(agents);
+  const all = Array.from(taskIndex.values());
+  let queued = false;
+
+  for (const { task, agent } of all) {
+    if (task.kind || task.status !== 'COMPLETED') continue;
+    const children = all.filter(ref => ref.task.parentId === task.id);
+    if (children.some(ref => ref.task.kind === 'FOLLOWUP')) continue;
+    if (!children.some(ref => !ref.task.kind && ref.task.status === 'COMPLETED')) continue;
+
+    // Everything underneath has to be over, however deep it went
+    const below = all.filter(ref => getAncestors(ref.task.id, taskIndex).some(ancestor => ancestor.task.id === task.id));
+    if (below.some(ref => !FINISHED_STATUSES.has(ref.task.status))) continue;
+
+    // No more money, no more rounds
+    const root = getRoot(task.id, taskIndex)?.task || task;
+    if (spentOn(getTree(root.id, taskIndex)) >= budgetOf(root)) continue;
+
+    store.createTask(agent.id, FOLLOWUP_PROMPT, 'Office', { parentId: task.id, kind: 'FOLLOWUP' });
+    queued = true;
+  }
+  return queued;
 };
 
 /**
@@ -877,6 +1060,7 @@ const runSchedules = (agents: Agent[], now: number, capReached: boolean) => {
     } else {
       // Keep working in the same project when it still exists; otherwise the run starts a new one
       const project = template.project && projectExists(template.project) ? template.project : undefined;
+      // Nobody is watching a scheduled run, so it does not stop for a plan to be approved
       store.createTask(agent.id, template.prompt, label, { budget: template.budget, project });
       store.pushEvent(`Scheduled task started: ${template.name}`);
     }
@@ -888,6 +1072,9 @@ const runSchedules = (agents: Agent[], now: number, capReached: boolean) => {
 const tick = () => {
   try {
     if (!holdOwnership()) return;
+
+    // Only the process that runs the office talks to Slack
+    ensureSlack();
 
     const now = Date.now();
     const monthKey = String(startOfMonth(now));
@@ -941,7 +1128,8 @@ const tick = () => {
       }
     }
 
-    wrapUp(agents);
+    // A manager looks at its team's work before the project is reviewed and reported
+    if (!followUps(agents)) wrapUp(agents);
 
     // Idle only if this tick changed nothing: a task it queued (a review, a fix) must be picked up by the next one
     engine.idleKey = `${store.getVersion()}:${monthKey}` === startKey ? startKey : undefined;

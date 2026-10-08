@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { describeSettings, isSettingName, saveSetting } from '../../../lib/server/settings';
 import { refuseForeignRequest, refuseUnknownHost } from '../../../lib/server/guard';
+import { slackStatus } from '../../../lib/server/slack';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +13,7 @@ export async function GET(req: NextRequest) {
   if (refusal) return refusal;
 
   try {
-    return NextResponse.json(describeSettings());
+    return NextResponse.json({ ...describeSettings(), slack: slackStatus() });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
       if (typeof value !== 'string' || value.length > MAX_VALUE_CHARS) {
         return NextResponse.json({ error: `Invalid value for ${name}` }, { status: 400 });
       }
-      if ((name === 'webAccess' || name === 'allowChecks') && value !== '' && value !== 'on' && value !== 'off') {
+      if ((name === 'webAccess' || name === 'allowChecks' || name === 'planFirst') && value !== '' && value !== 'on' && value !== 'off') {
         return NextResponse.json({ error: `${name} must be "on" or "off"` }, { status: 400 });
       }
       if (name === 'ollamaUrl' && value.trim() && !/^https?:\/\/[^\s]+$/i.test(value.trim())) {
@@ -43,7 +44,7 @@ export async function POST(req: NextRequest) {
       if (isSettingName(name)) saveSetting(name, value as string);
     }
 
-    return NextResponse.json(describeSettings());
+    return NextResponse.json({ ...describeSettings(), slack: slackStatus() });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
