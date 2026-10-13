@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^13.0.3",
     "diff": "^9.0.0",
     "framer-motion": "^14.0.0",
     "isomorphic-git": "^1.43.1",
