@@ -4,13 +4,15 @@
   "private": true,
   "license": "MIT",
   "author": "Hussein Zayat <husseinzayat10@hotmail.com>",
-  "repository": "github:husseinzayat3/MyOffice",
+  "repository": "github:husseinzayat3/Deskforce",
   "scripts": {
     "dev": "next dev -H 127.0.0.1",
     "build": "next build",
     "start": "next start -H 127.0.0.1",
     "lint": "eslint .",
+    "typecheck": "next typegen && tsc --noEmit",
     "dist:mac": "bash scripts/build-desktop.sh",
+    "dist:win": "bash scripts/build-desktop.sh",
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {

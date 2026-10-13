@@ -1,0 +1,60 @@
+name: Bug report
+description: Something does not work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. Please remove API keys, tokens and anything private from logs and screenshots before posting.
+        For a security problem, do not open an issue: see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Hire a Tech Lead on …
+        2. Assign the task "…"
+        3. …
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: How do you run it?
+      options:
+        - Desktop app (macOS)
+        - Desktop app (Windows)
+        - npm run dev / npm start
+        - Docker
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: 0.1.0, or the output of `git rev-parse --short HEAD`
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and Node.js version
+      placeholder: macOS 15.5, Node 20.20
+  - type: input
+    id: model
+    attributes:
+      label: Provider and model involved, if any
+      placeholder: Anthropic claude-sonnet-5-5, Ollama llama3, …
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The terminal output, or `server.log` from the desktop app's data folder. Remove keys first.
+      render: text

@@ -1,25 +1,34 @@
 #!/usr/bin/env bash
-# Builds the macOS desktop app: dist-desktop/Deskforce-<version>-<arch>.dmg
+# Builds the desktop app for the system it is run on:
+#   macOS    dist-desktop/Deskforce-<version>-<arch>.dmg
+#   Windows  dist-desktop/Deskforce-Setup-<version>.exe   (run it from Git Bash)
 #
 #   npm run dist:mac            build the .dmg for this Mac's processor
-#   npm run dist:mac -- --dir   build only the .app (faster, for trying it out)
+#   npm run dist:win            build the installer on Windows
+#   npm run dist:mac -- --dir   build only the app, without an installer (faster, for trying it out)
+#
+# Releases are built by .github/workflows/release.yml, which runs this script on both systems.
 #
 # Options, as environment variables:
 #
-#   MAC_ARCH=arm64|x64|both     which processors to build for (default: this Mac's).
+#   MAC_ARCH=arm64|x64|both     which processors to build for on macOS (default: this Mac's).
 #                               "both" makes one app for Apple Silicon and one for Intel.
+#   WIN_ARCH=x64|arm64          the processor to build for on Windows (default: x64).
 #
-#   Signing (needs an Apple Developer ID; without it the app is only ad-hoc signed and
-#   has to be opened with right-click → Open the first time on another Mac):
+#   Signing on macOS (needs an Apple Developer ID; without it the app is only ad-hoc signed and
+#   has to be allowed under System Settings → Privacy & Security the first time on another Mac):
 #     CSC_NAME="Developer ID Application: Your Name (TEAMID)"   a certificate in your keychain, or
 #     CSC_LINK=/path/to/certificate.p12  CSC_KEY_PASSWORD=...
 #   Notarisation, so Gatekeeper opens the app without a warning (only with signing):
 #     APPLE_ID=you@example.com  APPLE_APP_SPECIFIC_PASSWORD=...  APPLE_TEAM_ID=TEAMID
+#   Signing on Windows (optional; without it SmartScreen warns the first time):
+#     CSC_LINK=/path/to/certificate.pfx  CSC_KEY_PASSWORD=...
 #
-#   Automatic updates (only work in a signed app). Where the app looks for new versions:
+#   Automatic updates. Where the app looks for new versions:
 #     DESKFORCE_UPDATE_REPO=owner/repo      public GitHub releases, or
 #     DESKFORCE_UPDATE_URL=https://...      any web folder holding the files from dist-desktop/
-#   Upload the .dmg, the .zip and latest-mac.yml of each new version there.
+#   Upload the installers and the latest*.yml files of each new version there (on macOS also the .zip).
+#   macOS only installs updates for a signed app, so an ad-hoc signed one never looks for them.
 #
 # Needs Node 20 or newer.
 set -euo pipefail
@@ -32,14 +41,28 @@ RESOURCES=build-desktop
 
 node -e 'if (Number(process.versions.node.split(".")[0]) < 20) { console.error(`Node 20 or newer is required (this is ${process.version}). Run: nvm use`); process.exit(1); }'
 
+PLATFORM=$(node -p 'process.platform')
+if [ "$PLATFORM" != darwin ] && [ "$PLATFORM" != win32 ]; then
+  echo "The desktop app is built on macOS (for macOS) or on Windows (for Windows)." >&2
+  exit 1
+fi
+
 ELECTRON_VERSION=$(node -p 'require("electron/package.json").version')
-SQLITE_DIR=$(node -p 'require("path").dirname(require.resolve("better-sqlite3/package.json"))')
+# Forward slashes, so the path also works in Git Bash on Windows
+SQLITE_DIR=$(node -p 'require("path").dirname(require.resolve("better-sqlite3/package.json")).replace(/\\/g, "/")')
 HOST_ARCH=$(node -p 'process.arch')
-case "${MAC_ARCH:-$HOST_ARCH}" in
-  both) ARCHS="arm64 x64" ;;
-  arm64|x64) ARCHS="${MAC_ARCH:-$HOST_ARCH}" ;;
-  *) echo "MAC_ARCH must be arm64, x64 or both." >&2; exit 1 ;;
-esac
+if [ "$PLATFORM" = darwin ]; then
+  case "${MAC_ARCH:-$HOST_ARCH}" in
+    both) ARCHS="arm64 x64" ;;
+    arm64|x64) ARCHS="${MAC_ARCH:-$HOST_ARCH}" ;;
+    *) echo "MAC_ARCH must be arm64, x64 or both." >&2; exit 1 ;;
+  esac
+else
+  case "${WIN_ARCH:-x64}" in
+    arm64|x64) ARCHS="${WIN_ARCH:-x64}" ;;
+    *) echo "WIN_ARCH must be x64 or arm64." >&2; exit 1 ;;
+  esac
+fi
 
 SIGNED=0
 if [ -n "${CSC_NAME:-}${CSC_LINK:-}" ]; then SIGNED=1; fi
@@ -64,11 +87,11 @@ NATIVE_TMP=$(mktemp -d)
 trap 'rm -rf "$NATIVE_TMP"' EXIT
 rm -rf "$RESOURCES/native"
 for ARCH in $ARCHS; do
-  echo "▸ Fetching the SQLite module for Electron $ELECTRON_VERSION ($ARCH)"
+  echo "▸ Fetching the SQLite module for Electron $ELECTRON_VERSION ($PLATFORM $ARCH)"
   rm -rf "$NATIVE_TMP/better-sqlite3"
   cp -R "$SQLITE_DIR" "$NATIVE_TMP/better-sqlite3"
   rm -rf "$NATIVE_TMP/better-sqlite3/build"
-  (cd "$NATIVE_TMP/better-sqlite3" && npx --yes prebuild-install --runtime electron --target "$ELECTRON_VERSION" --arch "$ARCH" --platform darwin)
+  (cd "$NATIVE_TMP/better-sqlite3" && npx --yes prebuild-install --runtime electron --target "$ELECTRON_VERSION" --arch "$ARCH" --platform "$PLATFORM")
   mkdir -p "$RESOURCES/native/$ARCH"
   cp "$NATIVE_TMP/better-sqlite3/build/Release/better_sqlite3.node" "$RESOURCES/native/$ARCH/better_sqlite3.node"
 done
@@ -83,7 +106,7 @@ npm install --prefix electron --omit=dev --no-audit --no-fund --silent
 echo "▸ Checking that no secrets are in the bundle"
 if [ -f .env.local ]; then
   while IFS='=' read -r name value; do
-    value=$(printf '%s' "$value" | tr -d "\"' ")
+    value=$(printf '%s' "$value" | tr -d "\"' \r")
     if [ "${#value}" -ge 12 ] && grep -rqF -- "$value" "$STANDALONE"; then
       echo "✗ The value of $name from .env.local was found in the bundle. Not packaging." >&2
       exit 1
@@ -97,36 +120,65 @@ fi
 
 echo "▸ Creating the app icon"
 mkdir -p "$RESOURCES"
-ICONSET=$(mktemp -d)/icon.iconset
-mkdir -p "$ICONSET"
-for size in 16 32 128 256 512; do
-  sips -z "$size" "$size" public/avatars/robot.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-  sips -z "$((size * 2))" "$((size * 2))" public/avatars/robot.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
-done
-iconutil -c icns "$ICONSET" -o "$RESOURCES/icon.icns"
+if [ "$PLATFORM" = darwin ]; then
+  ICONSET=$(mktemp -d)/icon.iconset
+  mkdir -p "$ICONSET"
+  for size in 16 32 128 256 512; do
+    sips -z "$size" "$size" public/avatars/robot.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+    sips -z "$((size * 2))" "$((size * 2))" public/avatars/robot.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$ICONSET" -o "$RESOURCES/icon.icns"
+else
+  # electron-builder turns the picture into an .ico itself
+  cp public/avatars/robot.png "$RESOURCES/icon.png"
+fi
 
 echo "▸ Packaging"
-BUILDER_ARGS=(--mac --publish never)
+BUILDER_ARGS=(--publish never)
 for ARCH in $ARCHS; do BUILDER_ARGS+=("--$ARCH"); done
 
-if [ "$SIGNED" = 1 ]; then
-  echo "  signing with your Developer ID"
-  if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
-    echo "  and notarising with Apple (this takes a few minutes)"
-    BUILDER_ARGS+=(-c.mac.notarize=true)
+# Where the app looks for new versions, if anywhere
+FEED_ARGS=()
+if [ -n "${DESKFORCE_UPDATE_REPO:-}" ]; then
+  FEED_ARGS=(-c.publish.provider=github "-c.publish.owner=${DESKFORCE_UPDATE_REPO%%/*}" "-c.publish.repo=${DESKFORCE_UPDATE_REPO##*/}")
+elif [ -n "${DESKFORCE_UPDATE_URL:-}" ]; then
+  FEED_ARGS=(-c.publish.provider=generic "-c.publish.url=$DESKFORCE_UPDATE_URL")
+fi
+UPDATES=0
+
+if [ "$PLATFORM" = darwin ]; then
+  BUILDER_ARGS+=(--mac)
+  if [ "$SIGNED" = 1 ]; then
+    echo "  signing with your Developer ID"
+    if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+      echo "  and notarising with Apple (this takes a few minutes)"
+      BUILDER_ARGS+=(-c.mac.notarize=true)
+    else
+      echo "  not notarising: APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID are not all set"
+      BUILDER_ARGS+=(-c.mac.notarize=false)
+    fi
+    # Updates are only installed by macOS when the app is signed; they are delivered as a .zip
+    if [ "${#FEED_ARGS[@]}" -gt 0 ]; then
+      UPDATES=1
+      BUILDER_ARGS+=(-c.mac.target=dmg -c.mac.target=zip)
+    fi
   else
-    echo "  not notarising: APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID are not all set"
-    BUILDER_ARGS+=(-c.mac.notarize=false)
-  fi
-  # Updates are only installed by macOS when the app is signed
-  if [ -n "${DESKFORCE_UPDATE_REPO:-}" ]; then
-    BUILDER_ARGS+=(-c.mac.target=dmg -c.mac.target=zip -c.publish.provider=github "-c.publish.owner=${DESKFORCE_UPDATE_REPO%%/*}" "-c.publish.repo=${DESKFORCE_UPDATE_REPO##*/}")
-  elif [ -n "${DESKFORCE_UPDATE_URL:-}" ]; then
-    BUILDER_ARGS+=(-c.mac.target=dmg -c.mac.target=zip -c.publish.provider=generic "-c.publish.url=$DESKFORCE_UPDATE_URL")
+    echo "  no Developer ID given: the app is ad-hoc signed and will not update itself"
+    BUILDER_ARGS+=(-c.mac.identity=null)
   fi
 else
-  echo "  no Developer ID given: the app is ad-hoc signed and will not update itself"
-  BUILDER_ARGS+=(-c.mac.identity=null)
+  BUILDER_ARGS+=(--win)
+  if [ "$SIGNED" = 1 ]; then
+    echo "  signing with your certificate"
+  else
+    echo "  no certificate given: Windows SmartScreen will warn the first time the installer is opened"
+  fi
+  if [ "${#FEED_ARGS[@]}" -gt 0 ]; then UPDATES=1; fi
+fi
+
+if [ "$UPDATES" = 1 ]; then
+  echo "  the app will update itself"
+  BUILDER_ARGS+=("${FEED_ARGS[@]}" -c.extraMetadata.selfUpdates=true)
 fi
 
 DESKFORCE_SIGNED=$SIGNED npx electron-builder "${BUILDER_ARGS[@]}" "$@"

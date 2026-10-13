@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/husseinzayat3/Deskforce/security/advisories/new
+    about: Please report vulnerabilities privately, not in a public issue. See SECURITY.md.
+  - name: A customised version for your company
+    url: mailto:husseinzayat10@hotmail.com?subject=Custom%20office
+    about: Custom roles, integrations, branding or a hosted version are built on request.

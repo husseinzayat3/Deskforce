@@ -12,9 +12,9 @@ files:
   - preload.js
   - package.json
 
-# Kept as plain files so electron/after-pack.js can finish the bundle:
+# Kept as plain files so electron/after-pack.js can finish the app:
 # it adds the Next.js server (.next-desktop/standalone) with the SQLite module
-# for the app's processor, and signs the result when no Developer ID is used.
+# for the app's processor, and on macOS signs the result when no Developer ID is used.
 asar: false
 afterPack: electron/after-pack.js
 
@@ -26,11 +26,24 @@ mac:
   icon: build-desktop/icon.icns
   # Needed for notarisation; has no effect on an ad-hoc signed build
   hardenedRuntime: true
+  artifactName: "${productName}-${version}-${arch}.${ext}"
   target:
     - dmg
 
 dmg:
   title: "${productName} ${version}"
+
+win:
+  icon: build-desktop/icon.png
+  target:
+    - nsis
+
+# An installer with the usual steps: where to install, then a shortcut and an uninstaller
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: "${productName}-Setup-${version}.${ext}"
 
 # Signing, notarisation, the update feed and the processors to build for are
 # chosen by scripts/build-desktop.sh from environment variables.

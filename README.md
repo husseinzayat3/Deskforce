@@ -2,6 +2,8 @@
 
 A virtual office where AI agents work as a team. Hire employees, give the CEO a goal, and watch it get broken down, delegated, and turned into files on your machine — all shown on an animated 2D floorplan.
 
+![The Deskforce office: the team on the left, the employees at their desks on the floorplan](docs/screenshot.png)
+
 > **Want a version built for your company or your clients?** I customise it on request: your roles, tools, models, branding and hosting. See [Need it customised? Hire me](#need-it-customised-hire-me) or write to [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office).
 
 ## Features
@@ -38,6 +40,23 @@ A virtual office where AI agents work as a team. Hire employees, give the CEO a 
 - **Notifications** — a system notification when a report is ready, an employee has a question, or a task fails.
 - **Desktop app** — one command packages the whole thing as a macOS app for Apple Silicon and Intel, with a settings screen for your API keys.
 
+## Download
+
+Installers for the desktop app are on the [Releases page](https://github.com/husseinzayat3/Deskforce/releases/latest). Nothing else needs to be installed; enter your API keys in the app's settings.
+
+| System | File |
+| --- | --- |
+| macOS, Apple Silicon (M1 and later) | `Deskforce-<version>-arm64.dmg` |
+| macOS, Intel | `Deskforce-<version>-x64.dmg` |
+| Windows 10 and 11 | `Deskforce-Setup-<version>.exe` |
+
+The apps are not yet signed with a paid certificate, so the system asks before it opens them the first time:
+
+- **macOS:** after trying to open the app, go to **System Settings → Privacy & Security**, scroll down, and choose **Open Anyway**.
+- **Windows:** when "Windows protected your PC" appears, choose **More info → Run anyway**.
+
+To run it from the source instead, or with Docker, read on.
+
 ## Getting started
 
 ### 1. Prerequisites
@@ -50,8 +69,8 @@ A virtual office where AI agents work as a team. Hire employees, give the CEO a 
 ### 2. Install
 
 ```bash
-git clone https://github.com/husseinzayat3/MyOffice.git
-cd MyOffice
+git clone https://github.com/husseinzayat3/Deskforce.git
+cd Deskforce
 npm install
 ```
 
@@ -67,7 +86,7 @@ cp .env.example .env.local
 
 You can also enter keys, models and the Ollama address in the app itself: the gear button opens the settings. Values saved there are kept in the office database and take precedence over `.env.local`.
 
-> **Keys are stored unencrypted.** API keys and Slack tokens saved in the settings are written as plain text to the office database (`workspace/office_state.db`, or `~/Library/Application Support/Deskforce/office_state.db` in the desktop app), just as they are plain text in `.env.local`. Anyone who can read that file can read the keys, so keep it out of backups and folders you share, and never commit or send it.
+> **Keys are stored unencrypted.** API keys and Slack tokens saved in the settings are written as plain text to the office database (`workspace/office_state.db`, or `office_state.db` in the desktop app's data folder), just as they are plain text in `.env.local`. Anyone who can read that file can read the keys, so keep it out of backups and folders you share, and never commit or send it.
 
 ### 4. Run
 
@@ -162,36 +181,54 @@ Tests are code that a model wrote. The commands are fixed (never chosen by a mod
 ## Tests
 
 ```bash
-npm test      # unit tests for the response parser, pricing, naming and schedules
+npm test            # unit tests: response parser, pricing, schedules, and what the office refuses (hosts, origins, paths, addresses)
 npm run lint
+npm run typecheck
 ```
 
-## Desktop app (macOS)
+All three run on every pull request. To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md); to report a security problem, see [SECURITY.md](SECURITY.md).
+
+## Desktop app
+
+The app is built on the system it is for:
 
 ```bash
-npm run dist:mac                  # for this Mac's processor
+npm run dist:mac                  # on a Mac, for its processor
 MAC_ARCH=both npm run dist:mac    # one app for Apple Silicon, one for Intel
+npm run dist:win                  # on Windows, from Git Bash
 ```
 
-This builds `dist-desktop/Deskforce-<version>-<arch>.dmg`. Add `-- --dir` to build only the `.app`, which is quicker when you just want to try it.
+This builds `dist-desktop/Deskforce-<version>-<arch>.dmg` on macOS and `dist-desktop/Deskforce-Setup-<version>.exe` on Windows. Add `-- --dir` to build only the app without an installer, which is quicker when you just want to try it.
 
-The app contains the server and the engine, and listens on this computer only. Its data lives in `~/Library/Application Support/Deskforce/` (the database, a `projects` folder, and `server.log`); "Open folder" on a task shows the project in Finder. There is no `.env.local` in the app: enter your API keys in its settings. Closing the window keeps the agents working, and the app notifies you when something needs you; quit the app to stop them.
+The app contains the server and the engine, and listens on this computer only. Its data (the database, a `projects` folder, and `server.log`) lives in `~/Library/Application Support/Deskforce/` on macOS and `%APPDATA%\Deskforce\` on Windows; "Open folder" on a task shows the project there. There is no `.env.local` in the app: enter your API keys in its settings, and the app notifies you when something needs you.
 
-**Signing.** Without an Apple Developer ID the app is ad-hoc signed: it runs on the Mac that built it, and on another Mac it has to be opened the first time with right-click → Open. To distribute it properly, set these before building (see the top of `scripts/build-desktop.sh`):
+On macOS, closing the window keeps the agents working; quit the app to stop them. On Windows, closing the window quits the app, and unfinished tasks go back in the queue for the next start.
+
+**Signing.** Without an Apple Developer ID the app is ad-hoc signed: it runs on the Mac that built it, and on another Mac it has to be allowed the first time under System Settings → Privacy & Security → Open Anyway. To distribute it properly, set these before building (see the top of `scripts/build-desktop.sh`):
 
 ```bash
 export CSC_NAME="Developer ID Application: Your Name (TEAMID)"   # the certificate in your keychain
 export APPLE_ID=you@example.com APPLE_APP_SPECIFIC_PASSWORD=xxxx-xxxx-xxxx-xxxx APPLE_TEAM_ID=TEAMID   # notarisation
 ```
 
-**Updates.** A signed app can update itself. Tell the build where new versions will be, then upload the `.dmg`, the `.zip` and `latest-mac.yml` of each release there:
+On Windows, set `CSC_LINK` to a code-signing certificate (`.pfx`) and `CSC_KEY_PASSWORD` to its password; without them the installer works but SmartScreen warns the first time.
+
+**Updates.** An installed app can update itself: on Windows always, on macOS only when it is signed. Tell the build where new versions will be, then upload the installers and the `latest*.yml` files of each release there (on macOS also the `.zip`):
 
 ```bash
 export DESKFORCE_UPDATE_REPO=owner/repo        # a public GitHub repository's releases, or
 export DESKFORCE_UPDATE_URL=https://example.com/downloads
 ```
 
-The app then checks at start and every few hours, downloads a newer version in the background, and installs it when it is next quit. Bump `version` in `electron/package.json` for each release.
+The app then checks at start and every few hours, downloads a newer version in the background, and installs it when it is next quit.
+
+**Releasing.** Set the new `version` in `electron/package.json`, commit, and push a tag with the same number:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` then builds the macOS and Windows installers and attaches them to a draft release. Read the draft on the Releases page and publish it. The workflow signs the apps when the certificates are stored as repository secrets, which are listed at the top of that file.
 
 ## Docker
 

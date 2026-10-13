@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import git from 'isomorphic-git';
 import { diffLines } from 'diff';
-import { projectExists, projectPath } from './workspace';
+import { projectExists, projectPath, staysInside } from './workspace';
 
 /**
  * Every project folder is a git repository, written with a JavaScript git implementation
@@ -194,7 +194,7 @@ export const undoCommit = (project: string, commitId: string) =>
 
     for (const { path: file, before, after } of changes) {
       const full = path.resolve(dir, file);
-      if (!full.startsWith(dir + path.sep)) continue;
+      if (!full.startsWith(dir + path.sep) || !staysInside(dir, full)) continue;
 
       const current: Blob = fs.existsSync(full) ? fs.readFileSync(full) : undefined;
       const untouched = current && after ? Buffer.compare(Buffer.from(current), Buffer.from(after)) === 0 : !current && !after;

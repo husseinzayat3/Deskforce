@@ -34,6 +34,10 @@ interface Step {
   args: string[];
 }
 
+const WINDOWS = process.platform === 'win32';
+/** Windows installs Python under this name only. */
+const PYTHON = WINDOWS ? 'python' : 'python3';
+
 const PYTHON_SYNTAX = 'import ast, sys\nbad = 0\nfor p in sys.argv[1:]:\n    try:\n        ast.parse(open(p, encoding="utf-8").read(), p)\n    except SyntaxError as e:\n        bad = 1\n        print(f"{p}:{e.lineno}: {e.msg}")\nsys.exit(bad)';
 
 /** The checks that apply to a project, decided from the kinds of files in it. */
@@ -43,9 +47,9 @@ const stepsFor = (files: string[]): Step[] => {
 
   const python = pick(/\.py$/);
   if (python.length) {
-    steps.push({ label: 'Python syntax', command: 'python3', args: ['-c', PYTHON_SYNTAX, ...python] });
+    steps.push({ label: 'Python syntax', command: PYTHON, args: ['-c', PYTHON_SYNTAX, ...python] });
     if (python.some(f => /(^|\/)(test_[^/]*|[^/]*_test)\.py$/.test(f))) {
-      steps.push({ label: 'Python tests (unittest)', command: 'python3', args: ['-B', '-m', 'unittest', 'discover', '-q'] });
+      steps.push({ label: 'Python tests (unittest)', command: PYTHON, args: ['-B', '-m', 'unittest', 'discover', '-q'] });
     }
   }
 
@@ -102,7 +106,9 @@ const run = (step: Step, cwd: string) =>
       maxBuffer: 2_000_000,
       // A fresh environment: nothing from the office (API keys, settings) reaches the project's code
       env: {
-        PATH: `${process.env.PATH || ''}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+        PATH: WINDOWS ? process.env.PATH || '' : `${process.env.PATH || ''}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+        // Windows programs do not start without it
+        ...(WINDOWS && process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
         HOME: os.homedir(),
         LANG: 'en_US.UTF-8',
         TMPDIR: os.tmpdir(),

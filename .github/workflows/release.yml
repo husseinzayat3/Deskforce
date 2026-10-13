@@ -1,0 +1,111 @@
+name: Release
+
+# Pushing a tag such as v0.2.0 builds the installers for macOS and Windows and puts them in a
+# draft release. Read the draft, then publish it: only a published release is offered to
+# people who download the app, and to installed apps that update themselves.
+#
+# The version in the tag must be the "version" of electron/package.json.
+#
+# Optional repository secrets (Settings → Secrets and variables → Actions). Without them the
+# apps are built unsigned and the systems warn when they are first opened.
+#   macOS:   MAC_CERTIFICATE (the Developer ID .p12, base64-encoded), MAC_CERTIFICATE_PASSWORD,
+#            APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
+#   Windows: WINDOWS_CERTIFICATE (the .pfx, base64-encoded), WINDOWS_CERTIFICATE_PASSWORD
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Windows
+            os: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Check that the tag matches the app's version
+        run: |
+          version=$(node -p 'require("./electron/package.json").version')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "The tag is $GITHUB_REF_NAME but electron/package.json says $version." >&2
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: Build the app (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MAC_ARCH: both
+          DESKFORCE_UPDATE_REPO: ${{ github.repository }}
+          CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/build-desktop.sh
+
+      - name: Build the app (Windows)
+        if: runner.os == 'Windows'
+        env:
+          DESKFORCE_UPDATE_REPO: ${{ github.repository }}
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: bash scripts/build-desktop.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 7
+          # The installers, plus the files an installed app reads to find a newer version
+          path: |
+            dist-desktop/*.dmg
+            dist-desktop/*.zip
+            dist-desktop/*.exe
+            dist-desktop/*.blockmap
+            dist-desktop/latest*.yml
+
+  release:
+    name: Draft the release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -la installers
+          gh release create "$GITHUB_REF_NAME" installers/* \
+            --draft --verify-tag --generate-notes --title "Deskforce ${GITHUB_REF_NAME#v}"

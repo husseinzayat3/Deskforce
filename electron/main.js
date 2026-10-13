@@ -9,7 +9,7 @@ const path = require('path');
 const SERVER_START_TIMEOUT_MS = 30_000;
 /** How often the shell asks the office whether something worth a notification happened. */
 const EVENT_POLL_MS = 5_000;
-/** How often a signed, published app looks for a newer version. */
+/** How often a published app looks for a newer version. */
 const UPDATE_CHECK_MS = 6 * 60 * 60_000;
 /** Kinds of office events shown as system notifications. */
 const NOTABLE = new Set(['report', 'question', 'failed', 'limit']);
@@ -176,11 +176,14 @@ const watchEvents = () => {
 };
 
 /**
- * Updates itself when the build was given somewhere to look (see scripts/build-desktop.sh).
+ * Updates itself when the build was given somewhere to look (see scripts/build-desktop.sh):
+ * always possible on Windows, on macOS only for an app signed with a Developer ID.
  * A new version is downloaded in the background and installed when the app is next quit.
  */
 const watchForUpdates = () => {
-  if (!app.isPackaged || !fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'))) return;
+  // `selfUpdates` is set by the build only for an app that the system will let update itself
+  if (!app.isPackaged || !require('./package.json').selfUpdates) return;
+  if (!fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'))) return;
   try {
     const { autoUpdater } = require('electron-updater');
     const check = () => autoUpdater.checkForUpdatesAndNotify().catch(() => undefined);
@@ -197,6 +200,9 @@ ipcMain.handle('open-project', async (_event, project) => {
   const folder = path.join(PROJECTS_DIR, project);
   if (fs.existsSync(folder)) await shell.openPath(folder);
 });
+
+// Windows shows notifications only for an app that names itself (the appId of electron-builder.yml)
+if (process.platform === 'win32') app.setAppUserModelId('io.github.husseinzayat3.deskforce');
 
 if (!app.requestSingleInstanceLock()) {
   // Two copies would mean two engines on one database
@@ -220,7 +226,8 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
-  // macOS: closing the window keeps the app (and the agents' work) running in the Dock
+  // macOS: closing the window keeps the app (and the agents' work) running in the Dock.
+  // Elsewhere closing the window quits, which stops the agents until the app is opened again.
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
   });

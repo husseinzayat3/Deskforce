@@ -169,7 +169,7 @@ return (
     <div className={styles.header}>
       <div className={styles.brand}>
         <div className={styles.iconBox}><Terminal size={18} color="#38bdf8" /></div>
-        <h2 className={styles.title}>AI Office</h2>
+        <h2 className={styles.title}>Deskforce</h2>
       </div>
       <div className={styles.headerActions}>
         <button

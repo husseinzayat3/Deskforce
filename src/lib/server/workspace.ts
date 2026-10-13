@@ -33,6 +33,33 @@ const projectDirOf = (project: string) => {
 };
 
 /**
+ * Where a path really leads once symbolic links are followed, or null for a link to nothing
+ * (writing to one would create the file wherever it points). Parts that do not exist yet
+ * are kept as they are.
+ */
+const realLocation = (target: string): string | null => {
+  try {
+    return fs.realpathSync(/* turbopackIgnore: true */ target);
+  } catch {
+    if (fs.lstatSync(/* turbopackIgnore: true */ target, { throwIfNoEntry: false })?.isSymbolicLink()) return null;
+    const parent = path.dirname(target);
+    if (parent === target) return target;
+    const realParent = realLocation(parent);
+    return realParent && path.join(realParent, path.basename(target));
+  }
+};
+
+/**
+ * False when a symbolic link on the way to `full` leads out of `baseDir`. The office never
+ * creates links, but code run by the checks could leave one behind in a project.
+ */
+export const staysInside = (baseDir: string, full: string) => {
+  const realBase = realLocation(baseDir);
+  const real = realLocation(full);
+  return Boolean(realBase && real && real.startsWith(realBase + path.sep));
+};
+
+/**
  * Resolve a relative path inside the project dir.
  * Rejects absolute paths and anything that escapes the sandbox.
  */
@@ -40,7 +67,7 @@ const resolveInside = (baseDir: string, relPath: string): string | null => {
   const cleaned = relPath.trim().replace(/^[`'"]+|[`'"]+$/g, '').replace(/\\/g, '/').replace(/^\.?\/+/, '');
   if (!cleaned || path.isAbsolute(cleaned) || cleaned.split('/').includes('..')) return null;
   const full = path.resolve(baseDir, cleaned);
-  return full.startsWith(baseDir + path.sep) ? full : null;
+  return full.startsWith(baseDir + path.sep) && staysInside(baseDir, full) ? full : null;
 };
 
 /** LLMs often wrap file bodies in markdown code fences — strip them. */
@@ -54,6 +81,8 @@ const listDir = (dir: string, base = dir, out: string[] = []): string[] => {
   if (!fs.existsSync(/* turbopackIgnore: true */ dir)) return out;
   for (const entry of fs.readdirSync(/* turbopackIgnore: true */ dir, { withFileTypes: true })) {
     if (entry.name.startsWith('.') && entry.name !== '.gitignore') continue;
+    // Never followed: a link may point outside the project
+    if (entry.isSymbolicLink()) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!IGNORED_DIRS.has(entry.name)) listDir(full, base, out);
