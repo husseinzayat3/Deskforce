@@ -29,7 +29,7 @@ exports.default = async context => {
   // With a Developer ID, electron-builder signs the finished bundle itself after this step.
   // Without one, Apple Silicon still refuses to run code with no signature at all,
   // so the bundle gets an ad-hoc one.
-  if (process.env.MY_OFFICE_SIGNED !== '1') {
+  if (process.env.DESKFORCE_SIGNED !== '1') {
     execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' });
   }
 };

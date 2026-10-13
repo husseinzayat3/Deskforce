@@ -1,10 +1,11 @@
 {
-  "name": "my-office-desktop",
-  "productName": "My Office",
+  "name": "deskforce-desktop",
+  "productName": "Deskforce",
   "version": "0.1.0",
-  "description": "My Office \u2014 AI agent simulation",
+  "description": "Deskforce \u2014 AI agent office",
   "author": "Hussein Zayat <husseinzayat10@hotmail.com>",
   "private": true,
+  "license": "MIT",
   "main": "main.js",
   "dependencies": {
     "electron-updater": "^6.3.9"

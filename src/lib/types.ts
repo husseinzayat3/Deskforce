@@ -152,7 +152,7 @@ export interface Attachment {
 
 /** An office without its history or secrets: what "export" writes and "import" reads. */
 export interface OfficeFile {
-  format: 'my-office';
+  format: 'deskforce' | 'my-office';
   version: 1;
   exportedAt: string;
   roles: Role[];

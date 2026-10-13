@@ -5,8 +5,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "AI Office Manager",
-  description: "An animated web page showing an office with multiple AI agents.",
+  title: "Deskforce",
+  description: "An office of AI agents that plan, delegate and build.",
 };
 
 export default function RootLayout({

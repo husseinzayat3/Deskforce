@@ -36,7 +36,7 @@ export const fetchPage = async (address: string, signal?: AbortSignal) => {
     const res = await fetch(url, {
       redirect: 'manual',
       signal: combined,
-      headers: { 'User-Agent': 'MyOffice/1.0 (research agent)', Accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' },
+      headers: { 'User-Agent': 'Deskforce/1.0 (research agent)', Accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' },
     });
 
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {

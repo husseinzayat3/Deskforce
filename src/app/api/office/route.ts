@@ -16,6 +16,8 @@ import { PROJECTS_DIR } from '../../../lib/server/paths';
 export const dynamic = 'force-dynamic';
 
 const PROVIDERS: APIProvider[] = ['OpenAI', 'Grok', 'Anthropic', 'Gemini', 'Ollama'];
+/** Office files are written as 'deskforce'; 'my-office' is what the app wrote under its earlier name. */
+const OFFICE_FORMATS: string[] = ['deskforce', 'my-office'];
 const MAX_MODEL_CHARS = 100;
 const MAX_ROLE_CHARS = 40;
 const MAX_INSTRUCTIONS_CHARS = 4000;
@@ -50,7 +52,7 @@ const clean = (value: unknown, max: number) => (typeof value === 'string' ? valu
 const exportOffice = (): OfficeFile => {
   const agents = store.getState();
   return {
-    format: 'my-office',
+    format: 'deskforce',
     version: 1,
     exportedAt: new Date().toISOString(),
     roles: store.listRoles(),
@@ -67,7 +69,7 @@ const exportOffice = (): OfficeFile => {
 /** Adds what an office file contains to this office. Nothing that exists is removed or renamed. */
 const importOffice = (file: unknown) => {
   const office = file as Partial<OfficeFile> | null;
-  if (!office || office.format !== 'my-office' || office.version !== 1) throw new Error('This is not an office file.');
+  if (!office || !OFFICE_FORMATS.includes(office.format as string) || office.version !== 1) throw new Error('This is not an office file.');
   const counts = { roles: 0, employees: 0, templates: 0 };
 
   for (const role of Array.isArray(office.roles) ? office.roles.slice(0, 50) : []) {
@@ -162,7 +164,7 @@ export async function GET(req: NextRequest) {
     const params = new URL(req.url).searchParams;
     if (params.has('export')) {
       return new NextResponse(JSON.stringify(exportOffice(), null, 2), {
-        headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="my-office.json"' },
+        headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="deskforce-office.json"' },
       });
     }
     const taskId = params.get('task');

@@ -1,6 +1,8 @@
-# My Office — AI Agent Simulation
+# Deskforce — AI agent office
 
 A virtual office where AI agents work as a team. Hire employees, give the CEO a goal, and watch it get broken down, delegated, and turned into files on your machine — all shown on an animated 2D floorplan.
+
+> **Want a version built for your company or your clients?** I customise it on request: your roles, tools, models, branding and hosting. See [Need it customised? Hire me](#need-it-customised-hire-me) or write to [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office).
 
 ## Features
 
@@ -48,8 +50,8 @@ A virtual office where AI agents work as a team. Hire employees, give the CEO a 
 ### 2. Install
 
 ```bash
-git clone <this-repo-url>
-cd my-office
+git clone https://github.com/husseinzayat3/MyOffice.git
+cd MyOffice
 npm install
 ```
 
@@ -64,6 +66,8 @@ cp .env.example .env.local
 `.env.local` is ignored by git. A provider without a key returns mock responses, so you can explore the interface before adding one.
 
 You can also enter keys, models and the Ollama address in the app itself: the gear button opens the settings. Values saved there are kept in the office database and take precedence over `.env.local`.
+
+> **Keys are stored unencrypted.** API keys and Slack tokens saved in the settings are written as plain text to the office database (`workspace/office_state.db`, or `~/Library/Application Support/Deskforce/office_state.db` in the desktop app), just as they are plain text in `.env.local`. Anyone who can read that file can read the keys, so keep it out of backups and folders you share, and never commit or send it.
 
 ### 4. Run
 
@@ -110,10 +114,10 @@ The office can be reached from Slack without exposing your computer to the inter
 
    ```yaml
    display_information:
-     name: My Office
+     name: Deskforce
    features:
      bot_user:
-       display_name: My Office
+       display_name: Deskforce
        always_online: true
      app_home:
        messages_tab_enabled: true
@@ -137,7 +141,7 @@ The office can be reached from Slack without exposing your computer to the inter
 4. In the office, open Settings → Slack and paste both tokens. The status line shows "Connected".
 5. Send the app a direct message. It answers with your Slack user ID; add that ID to the allowed users in Settings. From then on it takes your instructions.
 
-Only the listed users can give instructions; everyone else is told so and nothing happens. In a channel, mention the app (`@My Office status`) after inviting it.
+Only the listed users can give instructions; everyone else is told so and nothing happens. In a channel, mention the app (`@Deskforce status`) after inviting it.
 
 What you can say is free text: "build me a landing page for the bakery", "how are things?", "approve the plan", "tell them to use blue instead", "cancel that". The employee who answers works through the same actions as the buttons in the app, and the office posts to your conversation when a plan or a question is waiting, a report is ready, or a task failed.
 
@@ -169,9 +173,9 @@ npm run dist:mac                  # for this Mac's processor
 MAC_ARCH=both npm run dist:mac    # one app for Apple Silicon, one for Intel
 ```
 
-This builds `dist-desktop/My Office-<version>-<arch>.dmg`. Add `-- --dir` to build only the `.app`, which is quicker when you just want to try it.
+This builds `dist-desktop/Deskforce-<version>-<arch>.dmg`. Add `-- --dir` to build only the `.app`, which is quicker when you just want to try it.
 
-The app contains the server and the engine, and listens on this computer only. Its data lives in `~/Library/Application Support/My Office/` (the database, a `projects` folder, and `server.log`); "Open folder" on a task shows the project in Finder. There is no `.env.local` in the app: enter your API keys in its settings. Closing the window keeps the agents working, and the app notifies you when something needs you; quit the app to stop them.
+The app contains the server and the engine, and listens on this computer only. Its data lives in `~/Library/Application Support/Deskforce/` (the database, a `projects` folder, and `server.log`); "Open folder" on a task shows the project in Finder. There is no `.env.local` in the app: enter your API keys in its settings. Closing the window keeps the agents working, and the app notifies you when something needs you; quit the app to stop them.
 
 **Signing.** Without an Apple Developer ID the app is ad-hoc signed: it runs on the Mac that built it, and on another Mac it has to be opened the first time with right-click → Open. To distribute it properly, set these before building (see the top of `scripts/build-desktop.sh`):
 
@@ -183,8 +187,8 @@ export APPLE_ID=you@example.com APPLE_APP_SPECIFIC_PASSWORD=xxxx-xxxx-xxxx-xxxx 
 **Updates.** A signed app can update itself. Tell the build where new versions will be, then upload the `.dmg`, the `.zip` and `latest-mac.yml` of each release there:
 
 ```bash
-export MY_OFFICE_UPDATE_REPO=owner/repo        # a public GitHub repository's releases, or
-export MY_OFFICE_UPDATE_URL=https://example.com/downloads
+export DESKFORCE_UPDATE_REPO=owner/repo        # a public GitHub repository's releases, or
+export DESKFORCE_UPDATE_URL=https://example.com/downloads
 ```
 
 The app then checks at start and every few hours, downloads a newer version in the background, and installs it when it is next quit. Bump `version` in `electron/package.json` for each release.
@@ -192,8 +196,8 @@ The app then checks at start and every few hours, downloads a newer version in t
 ## Docker
 
 ```bash
-docker build -t my-office .
-docker run -p 127.0.0.1:3000:3000 -v $(pwd)/workspace:/app/workspace --env-file .env.local my-office
+docker build -t deskforce .
+docker run -p 127.0.0.1:3000:3000 -v $(pwd)/workspace:/app/workspace --env-file .env.local deskforce
 ```
 
 Mount `/app/workspace` as shown to keep the generated files and the database. To use Ollama from the container, point `OLLAMA_URL` at the host, for example `-e OLLAMA_URL=http://host.docker.internal:11434`.
@@ -208,12 +212,27 @@ The office has no login, so it is built to be used from the computer it runs on:
 - A project preview is served from a separate local address: the page a model wrote cannot reach the office.
 - Agents with web access can fetch public pages only. Addresses on this computer or a private network are refused, so an agent cannot be talked into reading the office's own API or a device on your network.
 - Running checks is off by default; see [Checks](#checks) for what it does and how it is contained.
+- API keys and Slack tokens saved in the settings are stored unencrypted in the office database on this computer. The settings screen never sends a saved key back to the browser, only its last four characters.
 - Halting the office, or removing an employee, stops their model calls straight away.
 
 Do not expose it to the internet without adding authentication first.
 
-## Custom offices
+## Need it customised? Hire me
 
-Want an office built around your own team and workflow — different roles, your own tools and integrations, other AI providers, a custom floorplan, or a hosted multi-user version? I build customised versions on request.
+This project is open source and free to use as it is. If you want it shaped around your company or your clients, I build customised versions on request:
 
-Get in touch: **Hussein Zayat** — [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com)
+- **Your team and workflow** — your own roles, instructions, approval steps and reporting.
+- **Your tools** — integrations with the systems you already use (ticketing, CRM, chat, internal APIs, your git host).
+- **Your models** — other AI providers, private or self-hosted models, your own pricing and spending rules.
+- **Your brand** — a custom floorplan, avatars, name and look, packaged as your own desktop app.
+- **Your infrastructure** — a hosted, multi-user version with logins and permissions, deployed where you need it.
+
+Tell me what you need and I will reply with a proposal:
+
+**Hussein Zayat** — [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office)
+
+## License
+
+[MIT](LICENSE) © 2026 Hussein Zayat. You may use, change and redistribute this project, including commercially, as long as the copyright notice is kept.
+
+The default floorplan and avatars in `public/` were generated with Google Gemini and are distributed with the project under the same terms.

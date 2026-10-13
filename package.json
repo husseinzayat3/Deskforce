@@ -1,7 +1,10 @@
 {
-  "name": "my-office",
+  "name": "deskforce",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "author": "Hussein Zayat <husseinzayat10@hotmail.com>",
+  "repository": "github:husseinzayat3/MyOffice",
   "scripts": {
     "dev": "next dev -H 127.0.0.1",
     "build": "next build",

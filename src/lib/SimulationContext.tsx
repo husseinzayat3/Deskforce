@@ -34,7 +34,7 @@ const notifyOutside = (message: string) => {
   if (typeof window === 'undefined' || window.desktop || typeof Notification === 'undefined') return;
   if (Notification.permission !== 'granted' || document.hasFocus()) return;
   try {
-    new Notification('My Office', { body: message, icon: '/avatars/robot.png' });
+    new Notification('Deskforce', { body: message, icon: '/avatars/robot.png' });
   } catch {
     // some browsers only allow notifications from a service worker
   }

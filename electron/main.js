@@ -20,7 +20,7 @@ const SERVER_DIR = app.isPackaged
   : path.join(__dirname, '..', '.next-desktop', 'standalone');
 
 // Lets a test run keep its data away from the real office
-if (process.env.MY_OFFICE_USER_DATA) app.setPath('userData', path.resolve(process.env.MY_OFFICE_USER_DATA));
+if (process.env.DESKFORCE_USER_DATA) app.setPath('userData', path.resolve(process.env.DESKFORCE_USER_DATA));
 
 const DATA_DIR = app.getPath('userData');
 const PROJECTS_DIR = path.join(DATA_DIR, 'projects');
@@ -67,7 +67,7 @@ const startServer = async () => {
   server = utilityProcess.fork(path.join(SERVER_DIR, 'server.js'), [], {
     cwd: SERVER_DIR,
     stdio: 'pipe',
-    serviceName: 'My Office server',
+    serviceName: 'Deskforce server',
     env: {
       ...process.env,
       NODE_ENV: 'production',
@@ -85,7 +85,7 @@ const startServer = async () => {
   server.once('exit', code => {
     server = undefined;
     if (quitting) return;
-    dialog.showErrorBox('My Office', `The office server stopped unexpectedly (code ${code}).\nDetails: ${path.join(DATA_DIR, 'server.log')}`);
+    dialog.showErrorBox('Deskforce', `The office server stopped unexpectedly (code ${code}).\nDetails: ${path.join(DATA_DIR, 'server.log')}`);
     app.quit();
   });
 
@@ -98,7 +98,7 @@ const createWindow = () => {
     height: 1000,
     minWidth: 900,
     minHeight: 600,
-    title: 'My Office',
+    title: 'Deskforce',
     backgroundColor: '#0f172a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -155,7 +155,7 @@ const watchEvents = () => {
       if (lastEvent !== null && !watching && Notification.isSupported()) {
         for (const event of data.events || []) {
           if (!NOTABLE.has(event.kind)) continue;
-          const notification = new Notification({ title: 'My Office', body: event.message });
+          const notification = new Notification({ title: 'Deskforce', body: event.message });
           notification.on('click', () => {
             if (mainWindow) {
               if (mainWindow.isMinimized()) mainWindow.restore();
@@ -215,7 +215,7 @@ if (!app.requestSingleInstanceLock()) {
       watchEvents();
       watchForUpdates();
     } catch (e) {
-      dialog.showErrorBox('My Office could not start', `${e.message}\nDetails: ${path.join(DATA_DIR, 'server.log')}`);
+      dialog.showErrorBox('Deskforce could not start', `${e.message}\nDetails: ${path.join(DATA_DIR, 'server.log')}`);
       app.quit();
     }
   });

@@ -10,7 +10,7 @@ import { projectExists, projectPath } from './workspace';
  * that did it, which gives the project a history, a diff per task, and a way to undo one.
  */
 
-const OFFICE_AUTHOR = { name: 'Office', email: 'office@my-office.local' };
+const OFFICE_AUTHOR = { name: 'Office', email: 'office@deskforce.local' };
 const IGNORED = /(^|\/)(node_modules|\.dart_tool|build|\.idea|\.gradle|\.DS_Store|\.scaffolded)(\/|$)/;
 const MAX_HISTORY = 200;
 /** Files larger than this are listed in a diff without their contents. */
@@ -47,7 +47,7 @@ export interface FileChange {
 /** An email address for an employee, so their commits are attributed to them. */
 export const authorFor = (name: string): Author => ({
   name,
-  email: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '') || 'agent'}@my-office.local`,
+  email: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '') || 'agent'}@deskforce.local`,
 });
 
 // One writer per repository at a time

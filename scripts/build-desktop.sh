@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the macOS desktop app: dist-desktop/My Office-<version>-<arch>.dmg
+# Builds the macOS desktop app: dist-desktop/Deskforce-<version>-<arch>.dmg
 #
 #   npm run dist:mac            build the .dmg for this Mac's processor
 #   npm run dist:mac -- --dir   build only the .app (faster, for trying it out)
@@ -17,8 +17,8 @@
 #     APPLE_ID=you@example.com  APPLE_APP_SPECIFIC_PASSWORD=...  APPLE_TEAM_ID=TEAMID
 #
 #   Automatic updates (only work in a signed app). Where the app looks for new versions:
-#     MY_OFFICE_UPDATE_REPO=owner/repo      public GitHub releases, or
-#     MY_OFFICE_UPDATE_URL=https://...      any web folder holding the files from dist-desktop/
+#     DESKFORCE_UPDATE_REPO=owner/repo      public GitHub releases, or
+#     DESKFORCE_UPDATE_URL=https://...      any web folder holding the files from dist-desktop/
 #   Upload the .dmg, the .zip and latest-mac.yml of each new version there.
 #
 # Needs Node 20 or newer.
@@ -119,16 +119,16 @@ if [ "$SIGNED" = 1 ]; then
     BUILDER_ARGS+=(-c.mac.notarize=false)
   fi
   # Updates are only installed by macOS when the app is signed
-  if [ -n "${MY_OFFICE_UPDATE_REPO:-}" ]; then
-    BUILDER_ARGS+=(-c.mac.target=dmg -c.mac.target=zip -c.publish.provider=github "-c.publish.owner=${MY_OFFICE_UPDATE_REPO%%/*}" "-c.publish.repo=${MY_OFFICE_UPDATE_REPO##*/}")
-  elif [ -n "${MY_OFFICE_UPDATE_URL:-}" ]; then
-    BUILDER_ARGS+=(-c.mac.target=dmg -c.mac.target=zip -c.publish.provider=generic "-c.publish.url=$MY_OFFICE_UPDATE_URL")
+  if [ -n "${DESKFORCE_UPDATE_REPO:-}" ]; then
+    BUILDER_ARGS+=(-c.mac.target=dmg -c.mac.target=zip -c.publish.provider=github "-c.publish.owner=${DESKFORCE_UPDATE_REPO%%/*}" "-c.publish.repo=${DESKFORCE_UPDATE_REPO##*/}")
+  elif [ -n "${DESKFORCE_UPDATE_URL:-}" ]; then
+    BUILDER_ARGS+=(-c.mac.target=dmg -c.mac.target=zip -c.publish.provider=generic "-c.publish.url=$DESKFORCE_UPDATE_URL")
   fi
 else
   echo "  no Developer ID given: the app is ad-hoc signed and will not update itself"
   BUILDER_ARGS+=(-c.mac.identity=null)
 fi
 
-MY_OFFICE_SIGNED=$SIGNED npx electron-builder "${BUILDER_ARGS[@]}" "$@"
+DESKFORCE_SIGNED=$SIGNED npx electron-builder "${BUILDER_ARGS[@]}" "$@"
 
 echo "✓ Done. See dist-desktop/"

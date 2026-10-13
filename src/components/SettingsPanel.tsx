@@ -218,7 +218,7 @@ export default function SettingsPanel({ onClose, onSaved, onImport }: { onClose:
             <h4 style={{ margin: '8px 0 0', fontSize: 13 }}>Office file</h4>
             <span style={hintStyle}>The roles, employees and templates of this office as one file, to set up the same office elsewhere. It holds no keys, tasks or project files. Importing adds what is missing and never removes anything.</span>
             <div style={{ display: 'flex', gap: 8 }}>
-              <a className={styles.button} href="/api/office?export=1" download="my-office.json" style={{ padding: '6px 12px', fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, background: '#475569' }}>
+              <a className={styles.button} href="/api/office?export=1" download="deskforce-office.json" style={{ padding: '6px 12px', fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, background: '#475569' }}>
                 <Download size={13} /> Export
               </a>
               <button type="button" className={styles.button} style={{ padding: '6px 12px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 6, background: '#475569' }} onClick={() => importInput.current?.click()}>
