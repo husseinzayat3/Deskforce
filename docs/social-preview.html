@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+<!-- Source of social-preview.png (GitHub: Settings → General → Social preview). Regenerate:
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --hide-scrollbars --allow-file-access-from-files --force-device-scale-factor=1 --window-size=1280,640 --virtual-time-budget=4000 --screenshot="$PWD/docs/social-preview.png" "file://$PWD/docs/social-preview.html" -->
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    font-family: Inter, -apple-system, sans-serif;
+    background:
+      radial-gradient(circle at 18% 30%, rgba(56, 189, 248, 0.16), transparent 45%),
+      radial-gradient(circle at 85% 90%, rgba(251, 146, 60, 0.14), transparent 40%),
+      #0b1222;
+    color: #f8fafc;
+    position: relative;
+  }
+  /* faint dot grid */
+  body::before {
+    content: ""; position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(148, 163, 184, 0.14) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  .left {
+    position: absolute; left: 76px; top: 0; bottom: 0; width: 560px;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  .brand { display: flex; align-items: center; gap: 24px; }
+  .logo {
+    width: 112px; height: 112px; border-radius: 28px; background: #ffffff;
+    display: grid; place-items: center; flex: none;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  }
+  .logo img { width: 128px; height: 128px; margin-top: 6px; }
+  .name { font-size: 80px; font-weight: 800; letter-spacing: -2.5px; line-height: 1; }
+  .pitch {
+    margin-top: 40px; font-size: 38px; font-weight: 500; line-height: 1.25;
+    letter-spacing: -0.6px; color: #cbd5e1;
+  }
+  .pitch b { color: #ffffff; font-weight: 600; }
+  .tags { margin-top: 40px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .tag {
+    font-size: 18px; font-weight: 500; color: #e2e8f0;
+    padding: 8px 14px; border-radius: 999px;
+    background: rgba(148, 163, 184, 0.12); border: 1px solid rgba(148, 163, 184, 0.22);
+  }
+  .card {
+    position: absolute; left: 690px; top: 56px; width: 640px; height: 640px;
+    border-radius: 22px 0 0 0; overflow: hidden;
+    border: 6px solid #1e293b; border-right: 0; border-bottom: 0;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+    background: #fff;
+  }
+  /* The floorplan of docs/screenshot.png: reception, the open office and the break room */
+  .card img { position: absolute; width: 1440px; left: -606px; top: -42px; }
+  .fade {
+    position: absolute; left: 690px; right: 0; bottom: 0; height: 90px;
+    background: linear-gradient(to bottom, transparent, rgba(11, 18, 34, 0.55));
+  }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="brand">
+      <div class="logo"><img src="../public/avatars/robot.png"></div>
+      <div class="name">Deskforce</div>
+    </div>
+    <p class="pitch">A virtual office where <b>AI agents work as a team.</b></p>
+    <div class="tags">
+      <span class="tag">Open source</span>
+      <span class="tag">Runs on your machine</span>
+      <span class="tag">OpenAI · Claude · Gemini · Grok · Ollama</span>
+    </div>
+  </div>
+  <div class="card"><img src="screenshot.png"></div>
+  <div class="fade"></div>
+</body>
+</html>

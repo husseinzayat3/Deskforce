@@ -10,3 +10,7 @@ npm-debug.log*
 Dockerfile
 .dockerignore
 README.md
+dist-desktop
+build-desktop
+.next-desktop
+electron/node_modules
