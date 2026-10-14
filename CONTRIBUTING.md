@@ -7,7 +7,7 @@ Thank you for wanting to help. Bug reports, fixes, documentation and new feature
 - **A bug or a small fix:** open a pull request directly.
 - **A new feature or a larger change:** open an issue first and describe what you want to build, so we can agree on the approach before you spend time on it.
 - **A security problem:** do not open an issue. See [SECURITY.md](SECURITY.md).
-- **A version made for your company:** that is paid work rather than a contribution; see [the README](README.md#need-it-customised-hire-me).
+- **A version made for your company:** that is paid work rather than a contribution; see [the README](README.md#need-a-custom-version).
 
 ## Setting up
 
@@ -52,7 +52,7 @@ All three run on every pull request and must pass.
 - **Add a test** for new logic in `src/lib/`. Tests use Node's built-in runner; copy the style of the files in `tests/`.
 - **Changes to the security code** (`guard.ts`, `netGuard.ts`, path handling in `workspace.ts`, the sandbox in `checks.ts`, `electron/main.js`) need a test that shows what is refused, and a sentence in the pull request on why the change is safe.
 - **Match the code around you:** small functions, a comment that says why rather than what, and messages a non-programmer can understand, since they are shown to the user.
-- **Update the README** when you add a setting, a command or a behaviour someone using the office would notice.
+- **Update the docs** (the README, or the page in `docs/` it belongs to) when you add a setting, a command or a behaviour someone using the office would notice.
 - **Adding a model:** add its price to `MODEL_PRICING` in `src/lib/officeConfig.ts`, or its cost shows as unknown.
 - **Keep a pull request to one subject.** Two unrelated fixes are easier to review as two pull requests.
 - **Never commit** `.env.local`, anything from `workspace/`, or a real API key in a test or a screenshot.

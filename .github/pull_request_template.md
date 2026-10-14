@@ -8,4 +8,4 @@
 
 - [ ] `npm run lint`, `npm run typecheck` and `npm test` pass
 - [ ] New behaviour has a test, or I explained above why it does not need one
-- [ ] The README is updated if a setting, command or behaviour changed
+- [ ] The README or `docs/` is updated if a setting, command or behaviour changed

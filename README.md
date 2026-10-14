@@ -1,283 +1,116 @@
-# Deskforce — AI agent office
+<div align="center">
 
-A virtual office where AI agents work as a team. Hire employees, give the CEO a goal, and watch it get broken down, delegated, and turned into files on your machine — all shown on an animated 2D floorplan.
+<img src="public/avatars/robot.png" alt="" width="96" height="96">
 
-![The Deskforce office: the team on the left, the employees at their desks on the floorplan](docs/screenshot.png)
+# Deskforce
 
-> **Want a version built for your company or your clients?** I customise it on request: your roles, tools, models, branding and hosting. See [Need it customised? Hire me](#need-it-customised-hire-me) or write to [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office).
+**A virtual office of AI agents.** Hire a team, give the CEO a goal, and watch it get planned, delegated and built — with OpenAI, Claude, Gemini, Grok or a local model.
 
-## Features
+[![CI](https://img.shields.io/github/actions/workflow/status/husseinzayat3/Deskforce/ci.yml?branch=main&label=CI)](https://github.com/husseinzayat3/Deskforce/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/husseinzayat3/Deskforce)](https://github.com/husseinzayat3/Deskforce/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/husseinzayat3/Deskforce/total)](https://github.com/husseinzayat3/Deskforce/releases)
+[![License: MIT](https://img.shields.io/github/license/husseinzayat3/Deskforce)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/husseinzayat3/Deskforce?style=flat)](https://github.com/husseinzayat3/Deskforce/stargazers)
 
-- **Your own office** — upload a floorplan and avatars, and drag the desks and rooms to where they are on it. Each desk can belong to a role.
-- **Talk to it from Slack** — message the office and your most senior employee answers: it starts tasks, reports how things stand, and tells you when a plan, a question or a report is waiting.
-- **Projects and search** — a page per project with its files, cost and requests, and a search across every task and every project file.
-- **Visual office map** — each agent is a clickable avatar on the floorplan (click to open its tasks). The speech bubble shows what the model is writing as it writes it, and agents walk to the meeting room, the coffee machine and the break room.
-- **Runs on the server** — tasks are executed by the server, not the browser tab. Close the page and the work carries on; after a restart, interrupted tasks go back in the queue.
-- **Roles you define** — an office starts with eight roles (CEO, Tech Lead, Designer, QA, DevOps and more). Edit their instructions and seniority or add your own; an agent can only delegate to more junior roles.
-- **A model per employee** — OpenAI, Anthropic (Claude), Google Gemini, Grok (xAI) or a local model through Ollama, and the exact model for each hire: a strong one for managers and reviewers, a cheap one for juniors.
-- **Shared context** — every agent sees the original request, its manager's plan, what colleagues already finished and the current project files, so work is built on rather than overwritten.
-- **Plan first** — a task can start with the employee proposing a plan and a rough cost estimate. Nothing is built until you approve it, edit it, or ask for another.
-- **Follow-up rounds** — when delegated work comes back, the manager reads the results, fixes gaps, and may delegate once more before the final review.
-- **Questions up the chain** — an employee who is unsure asks the manager who assigned the task and gets the answer straight away; only what the manager cannot decide reaches you.
-- **Company knowledge** — a handbook you write (conventions, tone, preferred tools) that every employee is given, plus notes employees save for future projects.
-- **Message a running task** — say something to an employee mid-task without halting it.
-- **Meetings** — when two agents are asked to change the same file, they meet first, agree who does what, and then work one after the other.
-- **Questions** — an agent that cannot do a task without information only you have asks, and carries on when you answer.
-- **Final review and report** — when all delegated work is done, the task owner checks the whole project and fixes gaps. Each task you assign then gets a report.
-- **Files, history and undo** — browse a project's files in the app. Every task is a git commit in the agent's name: see exactly what it changed and undo it with one click.
-- **Preview** — projects with a web page (`index.html`) open in a preview, served from their own local address.
-- **Task board** — a nested view of each task and its sub-tasks, with progress, tokens, estimated cost, live output, and buttons to retry, request changes or continue the project.
-- **Costs** — spending per day, per employee and per model, a budget per task, and a monthly cap that stops new work when it is reached. Repeated context is cached at the provider, so each further step of a task costs a fraction.
-- **Performance** — per employee and per model: success rate, how often the work had to be fixed afterwards, average cost and time.
-- **Model comparison** — run the same request on two or three models, each alone in its own project, and compare result, time and cost side by side before deciding who to "hire".
-- **Templates and schedules** — save a task to run again with a click, or every day or week at a set time.
-- **Real tools, real output** — agents read, write and edit the project's files through tool calls, into a per-task folder under `workspace/projects/`. Models that cannot call tools fall back to a tagged text format.
-- **Web access** — agents search the web and read pages for current facts instead of inventing them. They can only reach public websites.
-- **Attachments** — give a task files or images to work from, or a whole folder to start the project from.
-- **Edit, archive, delete** — change an employee's role or model without losing their history; hide finished tasks or delete them with their files.
-- **Checks (opt-in)** — the office can check the syntax of a project's files and run its tests, and have failures fixed. Off by default; on macOS it runs sandboxed.
-- **Office files** — export the roles, employees and templates of an office as one file and import it elsewhere.
-- **Notifications** — a system notification when a report is ready, an employee has a question, or a task fails.
-- **Desktop app** — one command packages the whole thing as a macOS app for Apple Silicon and Intel, with a settings screen for your API keys.
+![Deskforce demo: the CEO plans a bakery website, the team builds it, and the result opens in a preview](docs/demo.gif)
 
-## Download
+<sub>A real run: five agents on gpt-4o built this bakery landing page in about a minute, for $0.11.</sub>
 
-Installers for the desktop app are on the [Releases page](https://github.com/husseinzayat3/Deskforce/releases/latest). Nothing else needs to be installed; enter your API keys in the app's settings.
+</div>
 
-| System | File |
-| --- | --- |
-| macOS, Apple Silicon (M1 and later) | `Deskforce-<version>-arm64.dmg` |
-| macOS, Intel | `Deskforce-<version>-x64.dmg` |
-| Windows 10 and 11 | `Deskforce-Setup-<version>.exe` |
+## Get it
 
-The apps are not yet signed with a paid certificate, so the system asks before it opens them the first time:
+[![Download for macOS](https://img.shields.io/badge/macOS-Download-111827?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/husseinzayat3/Deskforce/releases/latest)
+[![Download for Windows](https://img.shields.io/badge/Windows-Download-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/husseinzayat3/Deskforce/releases/latest)
+[![Linux with Docker](https://img.shields.io/badge/Linux-Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](docs/docker.md)
 
-- **macOS:** after trying to open the app, go to **System Settings → Privacy & Security**, scroll down, and choose **Open Anyway**.
-- **Windows:** when "Windows protected your PC" appears, choose **More info → Run anyway**.
+macOS (Apple Silicon and Intel) and Windows installers are on the [Releases page](https://github.com/husseinzayat3/Deskforce/releases/latest); add your API keys in the app's settings. The apps are not signed with a paid certificate yet, so [allow them the first time](docs/getting-started.md#desktop-app).
 
-To run it from the source instead, or with Docker, read on.
-
-## Getting started
-
-### 1. Prerequisites
-
-- Node.js 22 or newer (`nvm use` picks it up from `.nvmrc`)
-- At least one AI provider:
-  - an API key for OpenAI, Anthropic, Google Gemini or xAI (Grok), or
-  - [Ollama](https://ollama.com) running locally with the `llama3` model (`ollama pull llama3`) — set `OLLAMA_MODEL` to use a different one
-
-### 2. Install
-
-```bash
-git clone https://github.com/husseinzayat3/Deskforce.git
-cd Deskforce
-npm install
-```
-
-### 3. Configure
-
-Copy the example environment file and add the keys for the providers you plan to use:
-
-```bash
-cp .env.example .env.local
-```
-
-`.env.local` is ignored by git. A provider without a key returns mock responses, so you can explore the interface before adding one.
-
-You can also enter keys, models and the Ollama address in the app itself: the gear button opens the settings. Values saved there are kept in the office database and take precedence over `.env.local`.
-
-> **Keys are stored unencrypted.** API keys and Slack tokens saved in the settings are written as plain text to the office database (`workspace/office_state.db`, or `office_state.db` in the desktop app's data folder), just as they are plain text in `.env.local`. Anyone who can read that file can read the keys, so keep it out of backups and folders you share, and never commit or send it.
-
-### 4. Run
-
-```bash
-npm run dev
-```
-
-Open `http://localhost:3000`, hire a few employees, and assign a task to the most senior one.
-
-## How it works
-
-The office engine (`src/lib/server/engine.ts`) starts with the server and checks the queue every second. Each task is given to the employee's model together with the client's request, the manager's plan, what colleagues finished, and the project's files. The model then works by calling tools until it replies with a summary:
-
-| Tool | Effect |
-| --- | --- |
-| `name_project` | Names the folder of a new project |
-| `list_files`, `read_file` | Look at the project as it is now |
-| `write_file`, `edit_file`, `delete_file` | Create, change or remove a file in the project folder |
-| `delegate` | Hands a sub-task to a more junior colleague |
-| `ask_manager` | Asks the manager who assigned the task; the answer comes back at once |
-| `ask_client` | Pauses the task and asks you |
-| `save_note` | Writes down a lesson for future projects |
-| `web_search`, `fetch_url` | Look something up (Claude uses Anthropic's own web tools instead) |
-| `post_to_slack` | Tells you something in Slack, when it is connected |
-| `run_checks` | Checks syntax and runs tests, when you turned that on |
-
-Every task that changes files becomes one git commit in the employee's name. A model that cannot call tools (for example `llama3` on Ollama) is given the same abilities as tags in plain text, such as `[FILE: path] … [/FILE]`; it has no web access and cannot run checks.
-
-The guardrail limits, the per-model prices and the discounts for cached input used for cost estimates live in `src/lib/officeConfig.ts`. Costs are estimates from list prices; local Ollama models count as free.
-
-| Part | Technology |
-| --- | --- |
-| Frontend | Next.js (React), `framer-motion` |
-| Backend | Next.js API routes, plus an in-process engine that runs the tasks |
-| Database | `better-sqlite3` |
-| AI | OpenAI SDK (OpenAI and Grok), Anthropic SDK, Gemini and Ollama HTTP APIs, all streamed, with native tool calling |
-| History | `isomorphic-git` (no `git` program needed) |
-
-## Slack
-
-The office can be reached from Slack without exposing your computer to the internet: it opens the connection to Slack itself (Socket Mode).
-
-1. At [api.slack.com/apps](https://api.slack.com/apps) choose **Create New App → From a manifest**, pick your workspace, and paste:
-
-   ```yaml
-   display_information:
-     name: Deskforce
-   features:
-     bot_user:
-       display_name: Deskforce
-       always_online: true
-     app_home:
-       messages_tab_enabled: true
-       messages_tab_read_only_enabled: false
-   oauth_config:
-     scopes:
-       bot:
-         - chat:write
-         - im:history
-         - app_mentions:read
-   settings:
-     event_subscriptions:
-       bot_events:
-         - message.im
-         - app_mention
-     socket_mode_enabled: true
-   ```
-
-2. Under **Basic Information → App-Level Tokens**, create a token with the `connections:write` scope. It starts with `xapp-`.
-3. Under **Install App**, install it to the workspace and copy the **Bot User OAuth Token**. It starts with `xoxb-`.
-4. In the office, open Settings → Slack and paste both tokens. The status line shows "Connected".
-5. Send the app a direct message. It answers with your Slack user ID; add that ID to the allowed users in Settings. From then on it takes your instructions.
-
-Only the listed users can give instructions; everyone else is told so and nothing happens. In a channel, mention the app (`@Deskforce status`) after inviting it.
-
-What you can say is free text: "build me a landing page for the bakery", "how are things?", "approve the plan", "tell them to use blue instead", "cancel that". The employee who answers works through the same actions as the buttons in the app, and the office posts to your conversation when a plan or a question is waiting, a report is ready, or a task failed.
-
-The same conversation is available to scripts on this computer:
-
-```bash
-curl -X POST http://localhost:3000/api/chat -H 'Content-Type: application/json' -d '{"text":"how are things?"}'
-```
-
-Chatting uses the answering employee's model and counts towards the monthly spending.
-
-## Checks
-
-In Settings, "Run checks and tests on this computer" lets the office verify a project: JSON, Python, JavaScript and Dart files are checked for syntax, and Python (`unittest`) and JavaScript (`node --test`) tests are run. When a task tree finishes with failing checks, its owner gets one round to fix them and the checks run again; the result is in the report. Agents can also call the checks themselves while working.
-
-Tests are code that a model wrote. The commands are fixed (never chosen by a model), run without the office's environment, and on macOS inside a sandbox with no network, no writing outside the project, and no reading of your documents, keys or the office's own data. On other systems there is no sandbox, so leave it off unless the office already runs in a container. Nothing is installed: tests can only use what is already on the computer.
-
-## Tests
-
-```bash
-npm test            # unit tests: response parser, pricing, schedules, and what the office refuses (hosts, origins, paths, addresses)
-npm run lint
-npm run typecheck
-```
-
-All three run on every pull request. To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md); to report a security problem, see [SECURITY.md](SECURITY.md).
-
-## Desktop app
-
-The app is built on the system it is for:
-
-```bash
-npm run dist:mac                  # on a Mac, for its processor
-MAC_ARCH=both npm run dist:mac    # one app for Apple Silicon, one for Intel
-npm run dist:win                  # on Windows, from Git Bash
-```
-
-This builds `dist-desktop/Deskforce-<version>-<arch>.dmg` on macOS and `dist-desktop/Deskforce-Setup-<version>.exe` on Windows. Add `-- --dir` to build only the app without an installer, which is quicker when you just want to try it.
-
-The app contains the server and the engine, and listens on this computer only. Its data (the database, a `projects` folder, and `server.log`) lives in `~/Library/Application Support/Deskforce/` on macOS and `%APPDATA%\Deskforce\` on Windows; "Open folder" on a task shows the project there. There is no `.env.local` in the app: enter your API keys in its settings, and the app notifies you when something needs you.
-
-On macOS, closing the window keeps the agents working; quit the app to stop them. On Windows, closing the window quits the app, and unfinished tasks go back in the queue for the next start.
-
-**Signing.** Without an Apple Developer ID the app is ad-hoc signed: it runs on the Mac that built it, and on another Mac it has to be allowed the first time under System Settings → Privacy & Security → Open Anyway. To distribute it properly, set these before building (see the top of `scripts/build-desktop.sh`):
-
-```bash
-export CSC_NAME="Developer ID Application: Your Name (TEAMID)"   # the certificate in your keychain
-export APPLE_ID=you@example.com APPLE_APP_SPECIFIC_PASSWORD=xxxx-xxxx-xxxx-xxxx APPLE_TEAM_ID=TEAMID   # notarisation
-```
-
-On Windows, set `CSC_LINK` to a code-signing certificate (`.pfx`) and `CSC_KEY_PASSWORD` to its password; without them the installer works but SmartScreen warns the first time.
-
-**Updates.** An installed app can update itself: on Windows always, on macOS only when it is signed. Tell the build where new versions will be, then upload the installers and the `latest*.yml` files of each release there (on macOS also the `.zip`):
-
-```bash
-export DESKFORCE_UPDATE_REPO=owner/repo        # a public GitHub repository's releases, or
-export DESKFORCE_UPDATE_URL=https://example.com/downloads
-```
-
-The app then checks at start and every few hours, downloads a newer version in the background, and installs it when it is next quit.
-
-**Releasing.** Set the new `version` in `electron/package.json`, commit, and push a tag with the same number:
-
-```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
-
-`.github/workflows/release.yml` then builds the macOS and Windows installers and attaches them to a draft release. Read the draft on the Releases page and publish it. The workflow signs the apps when the certificates are stored as repository secrets, which are listed at the top of that file.
-
-## Docker
-
-Each release publishes an image for Intel and ARM machines, so no checkout is needed:
+**Docker** (Intel and ARM):
 
 ```bash
 docker run -p 127.0.0.1:3000:3000 -v $(pwd)/workspace:/app/workspace --env-file .env.local ghcr.io/husseinzayat3/deskforce
 ```
 
-Or build it from the source:
+**From the source** (Node.js 22+):
 
 ```bash
-docker build -t deskforce .
-docker run -p 127.0.0.1:3000:3000 -v $(pwd)/workspace:/app/workspace --env-file .env.local deskforce
+git clone https://github.com/husseinzayat3/Deskforce.git && cd Deskforce
+npm install && cp .env.example .env.local   # add a key, or use Ollama for free
+npm run dev                                  # open http://localhost:3000
 ```
 
-Mount `/app/workspace` as shown to keep the generated files and the database. To use Ollama from the container, point `OLLAMA_URL` at the host, for example `-e OLLAMA_URL=http://host.docker.internal:11434`.
+No key yet? Providers without one answer with mock text, so you can explore the interface first. Full setup: [Getting started](docs/getting-started.md).
 
-## Security
+## Why Deskforce
 
-The office has no login, so it is built to be used from the computer it runs on:
+- 👀 **Watch your team work** — every employee is an avatar on a floorplan; speech bubbles show what each model is writing as it writes it.
+- 🧠 **A model per employee** — a strong model for the CEO and reviewers, a cheap one for juniors, from any provider.
+- ✅ **Approve before anything is spent** — the CEO proposes a plan with a cost estimate; nothing is built until you approve it.
+- ↩️ **Undo anything** — every task is a git commit in the employee's name: see what it changed and revert it with one click.
+- 💰 **Costs under control** — a budget per task, a monthly cap, spending per employee and model, and side-by-side model comparisons.
+- 💬 **Works from Slack** — ask for work, check progress and approve plans from a Slack message.
+- 🔒 **Runs on your computer** — files stay on your machine, and with Ollama nothing leaves it at all.
 
-- `npm run dev` and `npm start` listen on `127.0.0.1` only, and the API refuses requests addressed to any other host name. To reach it under another name (for example behind your own reverse proxy with authentication), list the names in `OFFICE_ALLOWED_HOSTS`.
-- Requests that change anything are accepted only from the office page itself, so another website open in your browser cannot assign tasks or change settings.
-- The browser cannot call a model or write a file directly; it can only queue tasks. Files are written by the engine, and only inside the task's project folder.
-- A project preview is served from a separate local address: the page a model wrote cannot reach the office.
-- Agents with web access can fetch public pages only. Addresses on this computer or a private network are refused, so an agent cannot be talked into reading the office's own API or a device on your network.
-- Running checks is off by default; see [Checks](#checks) for what it does and how it is contained.
-- API keys and Slack tokens saved in the settings are stored unencrypted in the office database on this computer. The settings screen never sends a saved key back to the browser, only its last four characters.
-- Halting the office, or removing an employee, stops their model calls straight away.
+[All features →](docs/features.md)
 
-Do not expose it to the internet without adding authentication first.
+## Screenshots
 
-## Need it customised? Hire me
+<table>
+  <tr>
+    <td><img src="docs/screenshots/plan-approval.jpg" alt="The CEO's plan with a cost estimate, waiting for approval"><br><sub><b>Plan first</b> — approve, edit or ask for another plan</sub></td>
+    <td><img src="docs/screenshots/team-at-work.jpg" alt="Employees working at their desks, with speech bubbles showing their live output"><br><sub><b>The team at work</b> — live output on the floorplan</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/preview.jpg" alt="The finished bakery landing page open in the project preview"><br><sub><b>Files, history and preview</b> — the result, inside the app</sub></td>
+    <td><img src="docs/screenshots/costs.jpg" alt="Spending this month against the cap, per day, per employee and per model"><br><sub><b>Costs</b> — per day, employee and model, with a monthly cap</sub></td>
+  </tr>
+</table>
 
-This project is open source and free to use as it is. If you want it shaped around your company or your clients, I build customised versions on request:
+## How it works
+
+You give a request to your most senior employee. It plans the work, and once you approve, delegates parts to more junior colleagues, who can only hand work further down. Each agent works by calling tools — reading and writing project files, searching the web, asking its manager or you — and every finished task is committed to the project's git history. When all the work is in, the owner reviews the whole project, fixes gaps and writes you a report.
+
+```mermaid
+flowchart LR
+  A[Your request] --> B[CEO plans<br/>and estimates cost]
+  B --> C{You approve}
+  C --> D[Work delegated<br/>to the team]
+  D --> E[Agents use tools<br/>files · web · questions]
+  E --> F[A git commit<br/>per task]
+  F --> G[Final review<br/>and report]
+```
+
+More: [How it works](docs/how-it-works.md) · [Slack](docs/slack.md) · [Checks](docs/checks.md) · [Desktop app](docs/desktop-app.md)
+
+## How it compares
+
+| | Deskforce | Agent frameworks<br/><sub>CrewAI, AutoGen, LangGraph</sub> | AI software-company projects<br/><sub>ChatDev, MetaGPT</sub> |
+| --- | --- | --- | --- |
+| What it is | An app you install and use | Libraries you build agents with in code | Research projects you run from Python |
+| Getting started | Download, add a key | Write and host your own code | Set up a Python environment |
+| Seeing the work | Live floorplan, task tree, live output | Logs and tracing tools | Logs, plus replay tools |
+| Spending control | Plan approval, task budgets, monthly cap | Yours to build | Not the focus |
+| Undo | One click, per task | Yours to build | Not the focus |
+| Use from chat | Slack | Yours to build | — |
+
+Frameworks are the right choice when you are building agents into your own product. Deskforce is for getting work done with a team of agents today, and seeing what they do.
+
+## Documentation
+
+- **Docs:** [docs/](docs/README.md) — getting started, features, Slack, desktop app, Docker
+- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) — setup, tests, and what a pull request needs
+- **Security:** [the security model](docs/security.md) · report a vulnerability via [SECURITY.md](SECURITY.md)
+- **License:** [MIT](LICENSE) © 2026 Hussein Zayat — free to use, change and redistribute, including commercially. The default floorplan and avatars in `public/` were generated with Google Gemini and are distributed under the same terms.
+
+## Need a custom version?
+
+Deskforce is free and open source. If you want it shaped around your company or your clients, I build customised versions:
 
 - **Your team and workflow** — your own roles, instructions, approval steps and reporting.
-- **Your tools** — integrations with the systems you already use (ticketing, CRM, chat, internal APIs, your git host).
+- **Your tools** — integrations with the systems you already use: ticketing, CRM, chat, internal APIs, your git host.
 - **Your models** — other AI providers, private or self-hosted models, your own pricing and spending rules.
 - **Your brand** — a custom floorplan, avatars, name and look, packaged as your own desktop app.
 - **Your infrastructure** — a hosted, multi-user version with logins and permissions, deployed where you need it.
 
-Tell me what you need and I will reply with a proposal:
-
-**Hussein Zayat** — [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office)
-
-## License
-
-[MIT](LICENSE) © 2026 Hussein Zayat. You may use, change and redistribute this project, including commercially, as long as the copyright notice is kept.
-
-The default floorplan and avatars in `public/` were generated with Google Gemini and are distributed with the project under the same terms.
+Tell me what you need and I will reply with a proposal: **Hussein Zayat** — [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office) · [husseinzayat.it](https://husseinzayat.it)

@@ -25,7 +25,7 @@ Only the latest release and the `main` branch receive security fixes.
 
 ## What counts
 
-Deskforce has no login and is built to be used from the computer it runs on (see [Security in the README](README.md#security)). Within that design, these are vulnerabilities:
+Deskforce has no login and is built to be used from the computer it runs on (see [the security model](docs/security.md)). Within that design, these are vulnerabilities:
 
 - a website open in the user's browser, or a previewed project page, reading office data or changing anything (assigning tasks, changing settings, spending);
 - a model, a fetched web page or an attached file causing a read or write outside the task's project folder;
