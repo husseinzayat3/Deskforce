@@ -46,7 +46,7 @@ body:
     id: system
     attributes:
       label: Operating system and Node.js version
-      placeholder: macOS 15.5, Node 20.20
+      placeholder: macOS 15.5, Node 22.22
   - type: input
     id: model
     attributes:

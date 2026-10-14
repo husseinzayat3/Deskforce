@@ -61,7 +61,7 @@ To run it from the source instead, or with Docker, read on.
 
 ### 1. Prerequisites
 
-- Node.js 20.9 or newer (`nvm use` picks it up from `.nvmrc`)
+- Node.js 22 or newer (`nvm use` picks it up from `.nvmrc`)
 - At least one AI provider:
   - an API key for OpenAI, Anthropic, Google Gemini or xAI (Grok), or
   - [Ollama](https://ollama.com) running locally with the `llama3` model (`ollama pull llama3`) — set `OLLAMA_MODEL` to use a different one

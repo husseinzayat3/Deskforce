@@ -11,7 +11,7 @@ Thank you for wanting to help. Bug reports, fixes, documentation and new feature
 
 ## Setting up
 
-You need Node.js 20.9 or newer (`nvm use` picks the version from `.nvmrc`).
+You need Node.js 22 or newer (`nvm use` picks the version from `.nvmrc`).
 
 ```bash
 git clone https://github.com/husseinzayat3/Deskforce.git

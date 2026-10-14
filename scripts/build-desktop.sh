@@ -30,7 +30,7 @@
 #   Upload the installers and the latest*.yml files of each new version there (on macOS also the .zip).
 #   macOS only installs updates for a signed app, so an ad-hoc signed one never looks for them.
 #
-# Needs Node 20 or newer.
+# Needs Node 22 or newer.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -39,7 +39,7 @@ BUILD_DIR=.next-desktop
 STANDALONE="$BUILD_DIR/standalone"
 RESOURCES=build-desktop
 
-node -e 'if (Number(process.versions.node.split(".")[0]) < 20) { console.error(`Node 20 or newer is required (this is ${process.version}). Run: nvm use`); process.exit(1); }'
+node -e 'if (Number(process.versions.node.split(".")[0]) < 22) { console.error(`Node 22 or newer is required (this is ${process.version}). Run: nvm use`); process.exit(1); }'
 
 PLATFORM=$(node -p 'process.platform')
 if [ "$PLATFORM" != darwin ] && [ "$PLATFORM" != win32 ]; then
@@ -80,23 +80,23 @@ find "$STANDALONE" -mindepth 1 -maxdepth 1 \
   ! -name server.js ! -name package.json ! -name node_modules ! -name "$BUILD_DIR" ! -name public \
   -exec rm -rf {} +
 
-# The server runs inside Electron, whose Node differs from the one on this machine, so the
-# module compiled by `npm install` cannot be loaded there. One copy is fetched per processor;
-# electron/after-pack.js puts the right one into each app.
-NATIVE_TMP=$(mktemp -d)
-trap 'rm -rf "$NATIVE_TMP"' EXIT
+# The SQLite module is compiled code. better-sqlite3 ships one per system and processor, built
+# on Node-API so the same file loads in Node and in Electron; electron/after-pack.js puts the
+# right one into each app.
 rm -rf "$RESOURCES/native"
 for ARCH in $ARCHS; do
-  echo "▸ Fetching the SQLite module for Electron $ELECTRON_VERSION ($PLATFORM $ARCH)"
-  rm -rf "$NATIVE_TMP/better-sqlite3"
-  cp -R "$SQLITE_DIR" "$NATIVE_TMP/better-sqlite3"
-  rm -rf "$NATIVE_TMP/better-sqlite3/build"
-  (cd "$NATIVE_TMP/better-sqlite3" && npx --yes prebuild-install --runtime electron --target "$ELECTRON_VERSION" --arch "$ARCH" --platform "$PLATFORM")
+  echo "▸ Taking the SQLite module for Electron $ELECTRON_VERSION ($PLATFORM $ARCH)"
+  PREBUILD="$SQLITE_DIR/prebuilds/$PLATFORM-$ARCH.node"
+  if [ ! -f "$PREBUILD" ]; then
+    echo "✗ better-sqlite3 has no prebuilt module for $PLATFORM $ARCH ($PREBUILD)." >&2
+    exit 1
+  fi
   mkdir -p "$RESOURCES/native/$ARCH"
-  cp "$NATIVE_TMP/better-sqlite3/build/Release/better_sqlite3.node" "$RESOURCES/native/$ARCH/better_sqlite3.node"
+  cp "$PREBUILD" "$RESOURCES/native/$ARCH/better_sqlite3.node"
 done
-# The copy built for this machine's Node must not ship; each app gets its own in after-pack
-rm -rf "$STANDALONE/node_modules/better-sqlite3/build"
+# The copies traced from this machine must not ship (they cover this processor only, and
+# better-sqlite3 prefers them); each app gets its own in after-pack
+rm -rf "$STANDALONE/node_modules/better-sqlite3/build" "$STANDALONE/node_modules/better-sqlite3/prebuilds"
 # Image optimisation is not used, and its native library exists for one processor only
 rm -rf "$STANDALONE/node_modules/@img" "$STANDALONE/node_modules/sharp"
 
