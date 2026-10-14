@@ -40,6 +40,9 @@ Thumbs.db
 # Claude Code's personal settings
 .claude/settings.local.json
 
+# personal planning notes
+LAUNCH_PLAN.md
+
 # debug
 *.log
 npm-debug.log*

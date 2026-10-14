@@ -5,12 +5,14 @@
 //
 //   node scripts/smoke-desktop.js "dist-desktop/mac-arm64/Deskforce.app/Contents/MacOS/Deskforce"
 //   node scripts/smoke-desktop.js dist-desktop/win-unpacked/Deskforce.exe
+//
+// SMOKE_TIMEOUT_SECONDS gives a slow start more time (default 90).
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const TIMEOUT_MS = 90_000;
+const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_SECONDS || 90) * 1000;
 
 const executable = process.argv[2];
 if (!executable || !fs.existsSync(executable)) {
@@ -63,5 +65,5 @@ const finish = (ok, message) => {
     }
     await wait(500);
   }
-  finish(false, `The office did not answer within ${TIMEOUT_MS / 1000} seconds.`);
+  finish(false, `The office did not answer within ${TIMEOUT_MS / 1000} seconds (the app is still running).`);
 })();

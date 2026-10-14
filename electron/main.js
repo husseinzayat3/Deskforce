@@ -6,7 +6,8 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 
-const SERVER_START_TIMEOUT_MS = 30_000;
+// Generous: the first start after install can be slow (Rosetta translates the whole app first)
+const SERVER_START_TIMEOUT_MS = 120_000;
 /** How often the shell asks the office whether something worth a notification happened. */
 const EVENT_POLL_MS = 5_000;
 /** How often a published app looks for a newer version. */
@@ -63,6 +64,7 @@ const startServer = async () => {
   const port = await freePort();
   serverUrl = `http://127.0.0.1:${port}`;
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  console.log(`Starting the office server on ${serverUrl}`);
 
   server = utilityProcess.fork(path.join(SERVER_DIR, 'server.js'), [], {
     cwd: SERVER_DIR,
@@ -85,6 +87,7 @@ const startServer = async () => {
   server.once('exit', code => {
     server = undefined;
     if (quitting) return;
+    console.error(`The office server stopped unexpectedly (code ${code}).`);
     dialog.showErrorBox('Deskforce', `The office server stopped unexpectedly (code ${code}).\nDetails: ${path.join(DATA_DIR, 'server.log')}`);
     app.quit();
   });
@@ -221,6 +224,8 @@ if (!app.requestSingleInstanceLock()) {
       watchEvents();
       watchForUpdates();
     } catch (e) {
+      // Also printed, so a run nobody watches (the release checks) shows why, not just a dialog
+      console.error(`Deskforce could not start: ${e.message}`);
       dialog.showErrorBox('Deskforce could not start', `${e.message}\nDetails: ${path.join(DATA_DIR, 'server.log')}`);
       app.quit();
     }

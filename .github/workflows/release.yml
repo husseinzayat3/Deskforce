@@ -81,10 +81,11 @@ jobs:
       - name: Start the apps (macOS)
         if: runner.os == 'macOS'
         run: |
-          # The Intel app runs on this Apple Silicon machine through Rosetta
+          # The Intel app runs on this Apple Silicon machine through Rosetta, which translates
+          # the whole app on its first start; on a runner that can take minutes
           softwareupdate --install-rosetta --agree-to-license || true
           node scripts/smoke-desktop.js "dist-desktop/mac-arm64/Deskforce.app/Contents/MacOS/Deskforce"
-          node scripts/smoke-desktop.js "dist-desktop/mac/Deskforce.app/Contents/MacOS/Deskforce"
+          SMOKE_TIMEOUT_SECONDS=300 node scripts/smoke-desktop.js "dist-desktop/mac/Deskforce.app/Contents/MacOS/Deskforce"
 
       - name: Start the app (Windows)
         if: runner.os == 'Windows'
