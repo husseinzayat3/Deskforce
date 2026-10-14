@@ -48,8 +48,9 @@ if [ "$PLATFORM" != darwin ] && [ "$PLATFORM" != win32 ]; then
 fi
 
 ELECTRON_VERSION=$(node -p 'require("electron/package.json").version')
-# Forward slashes, so the path also works in Git Bash on Windows
-SQLITE_DIR=$(node -p 'require("path").dirname(require.resolve("better-sqlite3/package.json")).replace(/\\/g, "/")')
+# Forward slashes, so the path also works in Git Bash on Windows. No literal "/" in the script:
+# Git Bash rewrites a lone "/" argument into its install folder ("C:/Program Files/Git/").
+SQLITE_DIR=$(node -p 'const path = require("path"); path.dirname(require.resolve("better-sqlite3/package.json")).split(path.sep).join(path.posix.sep)')
 HOST_ARCH=$(node -p 'process.arch')
 if [ "$PLATFORM" = darwin ]; then
   case "${MAC_ARCH:-$HOST_ARCH}" in
