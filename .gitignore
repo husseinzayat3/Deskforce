@@ -1,4 +1,6 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# package-lock.json and electron/package-lock.json are committed on purpose: `npm ci` in CI
+# and the release workflow installs exactly what they pin.
 
 # dependencies
 node_modules/
@@ -21,34 +23,50 @@ node_modules/
 # production
 /build
 
+# caches
+.eslintcache
+*.tsbuildinfo
+
 # misc
 .DS_Store
-*.pem
+Thumbs.db
+
+# editors (shared VS Code recommendations stay)
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Claude Code's personal settings
+.claude/settings.local.json
 
 # debug
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-# local env files
-.env*.local
 
 # vercel
 .vercel
 
 # typescript
-*.tsbuildinfo
 next-env.d.ts
 
-# secret files
+# secret files (.env.local and other .env variants included)
 .env*
 !.env.example
 *.key
+*.pem
 *serviceAccount*.json
 .firebaserc
-firebase-debug*.log
 
-# workspace
+# signing certificates for the desktop app
+*.p12
+*.pfx
+*.cer
+*.mobileprovision
+*.provisionprofile
+
+# workspace: office data and projects stay on this machine
 workspace/*
 !workspace/.gitkeep
-workspace/office_state.db*
