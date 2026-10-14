@@ -1,7 +1,7 @@
 {
   "name": "deskforce-desktop",
   "productName": "Deskforce",
-  "version": "0.1.4",
+  "version": "0.2.1",
   "description": "Deskforce \u2014 AI agent office",
   "author": "Hussein Zayat <husseinzayat10@hotmail.com>",
   "private": true,
