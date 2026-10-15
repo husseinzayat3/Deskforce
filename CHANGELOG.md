@@ -11,6 +11,7 @@ Installers for each release are on the [Releases page](https://github.com/hussei
 - A documentation site at [husseinzayat3.github.io/Deskforce](https://husseinzayat3.github.io/Deskforce/), with new pages on concepts, providers and models, costs and budgets, office files, an FAQ and troubleshooting.
 - A shorter README with a demo, screenshots and a comparison with other agent tools.
 - A code of conduct and this changelog.
+- Examples of real runs with their costs, including one request compared on three models.
 
 ### Changed
 - Much broader automated tests: every provider's streaming format, whole tasks through the engine, and the office in a real browser, with coverage reported on each pull request.

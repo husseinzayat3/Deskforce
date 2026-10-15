@@ -14,7 +14,7 @@
 
 ![Deskforce demo: the CEO plans a bakery website, the team builds it, and the result opens in a preview](docs/demo.gif)
 
-<sub>A real run: four employees on gpt-4o built this bakery landing page in about a minute, for $0.11.</sub>
+<sub>A real run: four employees on gpt-4o built this bakery landing page in about a minute, for $0.11. More in [examples/](examples/).</sub>
 
 </div>
 
@@ -52,7 +52,7 @@ No key yet? Providers without one answer with mock text, so you can explore the 
 - 💬 **Works from Slack** — ask for work, check progress and approve plans from a Slack message.
 - 🔒 **Runs on your computer** — files stay on your machine, and with Ollama nothing leaves it at all.
 
-[All features →](docs/features.md)
+[All features →](docs/features.md) · [Examples with real costs →](examples/)
 
 ## Screenshots
 
