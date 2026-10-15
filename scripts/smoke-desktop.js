@@ -5,6 +5,10 @@
 //
 //   node scripts/smoke-desktop.js "dist-desktop/mac-arm64/Deskforce.app/Contents/MacOS/Deskforce"
 //   node scripts/smoke-desktop.js dist-desktop/win-unpacked/Deskforce.exe
+//   xvfb-run -a node scripts/smoke-desktop.js dist-desktop/linux-unpacked/deskforce --no-sandbox
+//
+// Anything after the app is passed to it. On a Linux build machine, --no-sandbox lets Electron start
+// without the setuid sandbox helper that an installed .deb sets up; it is only for this check.
 //
 // SMOKE_TIMEOUT_SECONDS gives a slow start more time (default 90).
 const { spawn } = require('child_process');
@@ -25,7 +29,7 @@ const logFile = path.join(dataDir, 'server.log');
 const env = { ...process.env, DESKFORCE_USER_DATA: dataDir };
 // Set by editors built on Electron; with it the app would run as plain Node and exit at once
 delete env.ELECTRON_RUN_AS_NODE;
-const app = spawn(executable, [], { env, stdio: 'inherit' });
+const app = spawn(executable, process.argv.slice(3), { env, stdio: 'inherit' });
 
 let exited = null;
 app.on('exit', code => (exited = code));

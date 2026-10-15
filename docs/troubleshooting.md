@@ -20,6 +20,12 @@ xattr -dr com.apple.quarantine /Applications/Deskforce.app
 
 Choose **More info → Run anyway**. The installer is not signed with a paid certificate yet.
 
+## The Linux AppImage does not start
+
+- Make it executable first: `chmod +x Deskforce-*.AppImage`.
+- On Ubuntu 22.04 and later, install FUSE 2: `sudo apt install libfuse2` (on 24.04: `libfuse2t64`).
+- Or install the `.deb` instead: `sudo apt install ./Deskforce-*.deb`.
+
 ## Port 3000 is already in use
 
 Another program uses the port. Stop it, or run the office on another port:
@@ -76,6 +82,7 @@ The office has no price for that model. Until you add one, its spending counts a
 | Docker | The volume mounted on `/app/workspace` | `docker logs <container>` |
 | Desktop app, macOS | `~/Library/Application Support/Deskforce/` | `server.log` in that folder |
 | Desktop app, Windows | `%APPDATA%\Deskforce\` | `server.log` in that folder |
+| Desktop app, Linux | `~/.config/Deskforce/` | `server.log` in that folder |
 
 ## Start again with an empty office
 

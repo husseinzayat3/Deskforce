@@ -13,6 +13,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "dist:mac": "bash scripts/build-desktop.sh",
     "dist:win": "bash scripts/build-desktop.sh",
+    "dist:linux": "bash scripts/build-desktop.sh",
     "test": "tsx --test tests/*.test.ts",
     "test:coverage": "c8 tsx --test tests/*.test.ts",
     "test:e2e": "tsx --test tests/e2e/*.e2e.ts"

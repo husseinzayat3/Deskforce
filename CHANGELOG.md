@@ -7,9 +7,17 @@ Installers for each release are on the [Releases page](https://github.com/hussei
 ## [Unreleased]
 
 ### Added
+- Linux installers: an AppImage for any distribution and a .deb for Debian and Ubuntu. The AppImage updates itself.
 - A documentation site at [husseinzayat3.github.io/Deskforce](https://husseinzayat3.github.io/Deskforce/), with new pages on concepts, providers and models, costs and budgets, office files, an FAQ and troubleshooting.
 - A shorter README with a demo, screenshots and a comparison with other agent tools.
 - A code of conduct and this changelog.
+
+### Changed
+- Much broader automated tests: every provider's streaming format, whole tasks through the engine, and the office in a real browser, with coverage reported on each pull request.
+- The engine and the largest interface components are split into smaller files, and the code no longer uses untyped values. Nothing changes in how the office works.
+
+### Fixed
+- Slack: a connection answer without an address now gives a clear error, and events without an id are no longer mistaken for duplicates.
 
 ## [0.2.2] - 2026-10-14
 

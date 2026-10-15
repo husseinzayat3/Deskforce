@@ -11,12 +11,18 @@ Installers are on the [Releases page](https://github.com/husseinzayat3/Deskforce
 | macOS, Apple Silicon (M1 and later) | `Deskforce-<version>-arm64.dmg` |
 | macOS, Intel | `Deskforce-<version>-x64.dmg` |
 | Windows 10 and 11 | `Deskforce-Setup-<version>.exe` |
-| Linux | No installer yet: use [Docker](docker.md) or run from the source below |
+| Linux, any distribution | `Deskforce-<version>-<arch>.AppImage` |
+| Debian, Ubuntu and derivatives | `Deskforce-<version>-<arch>.deb` |
 
 The apps are not yet signed with a paid certificate, so the system asks before it opens them the first time:
 
 - **macOS:** after trying to open the app, go to **System Settings → Privacy & Security**, scroll down, and choose **Open Anyway**.
 - **Windows:** when "Windows protected your PC" appears, choose **More info → Run anyway**.
+
+On Linux (installers from version 0.3.0; for earlier versions use [Docker](docker.md)):
+
+- **AppImage:** make it executable and start it: `chmod +x Deskforce-*.AppImage && ./Deskforce-*.AppImage`. On Ubuntu 22.04 and later it needs FUSE 2: `sudo apt install libfuse2` (`libfuse2t64` on 24.04).
+- **.deb:** `sudo apt install ./Deskforce-*.deb`, then start Deskforce from your applications menu.
 
 More on the app, building it yourself, signing and updates: [Desktop app](desktop-app.md).
 

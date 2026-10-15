@@ -22,9 +22,9 @@
 
 [![Download for macOS](https://img.shields.io/badge/macOS-Download-111827?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/husseinzayat3/Deskforce/releases/latest)
 [![Download for Windows](https://img.shields.io/badge/Windows-Download-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/husseinzayat3/Deskforce/releases/latest)
-[![Linux with Docker](https://img.shields.io/badge/Linux-Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](docs/docker.md)
+[![Download for Linux](https://img.shields.io/badge/Linux-Download-E95420?style=for-the-badge&logo=linux&logoColor=white)](docs/getting-started.md#desktop-app)
 
-macOS (Apple Silicon and Intel) and Windows installers are on the [Releases page](https://github.com/husseinzayat3/Deskforce/releases/latest); add your API keys in the app's settings. The apps are not signed with a paid certificate yet, so [allow them the first time](docs/getting-started.md#desktop-app).
+Installers for macOS (Apple Silicon and Intel), Windows and Linux (AppImage and .deb) are on the [Releases page](https://github.com/husseinzayat3/Deskforce/releases/latest); add your API keys in the app's settings. The apps are not signed with a paid certificate yet, so [allow them the first time](docs/getting-started.md#desktop-app).
 
 **Docker** (Intel and ARM):
 
