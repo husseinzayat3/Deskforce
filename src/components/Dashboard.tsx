@@ -2,8 +2,8 @@
 
 import React, { useState } from 'react';
 import { useSimulation } from '../lib/SimulationContext';
-import { AgentRole, APIProvider, Agent, Attachment, TaskItem } from '../lib/types';
-import { UserPlus, Briefcase, Zap, CheckCircle2, ChevronRight, ChevronDown, MessageSquare, Terminal, Trash2, Pause, Play, SquareX, ListTree, Settings, Users, Wallet, BookmarkCheck, Pencil, Paperclip, FolderUp, X, BookOpen, FolderKanban, Search } from 'lucide-react';
+import { Agent, Attachment, TaskItem } from '../lib/types';
+import { Briefcase, Zap, CheckCircle2, ChevronRight, MessageSquare, Terminal, Trash2, Pause, Play, SquareX, ListTree, Settings, Users, Wallet, BookmarkCheck, Pencil, Paperclip, FolderUp, X, BookOpen, FolderKanban, Search } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import TaskTree from './TaskTree';
 import SettingsPanel from './SettingsPanel';
@@ -12,13 +12,15 @@ import InsightsPanel from './InsightsPanel';
 import TemplatesPanel from './TemplatesPanel';
 import EmployeeEditor from './EmployeeEditor';
 import KnowledgePanel from './KnowledgePanel';
-import AvatarPicker from './AvatarPicker';
+import HireForm from './HireForm';
+import TaskHistory from './TaskHistory';
 import ProjectsPanel from './ProjectsPanel';
 import SearchPanel from './SearchPanel';
 import ProjectBrowser from './ProjectBrowser';
 import { readAttachments } from '../lib/attachments';
-import { OFFICE_CONFIG, MODEL_SUGGESTIONS, cleanPrompt, formatUsage, projectOf, taskTitle } from '../lib/officeConfig';
+import { OFFICE_CONFIG, cleanPrompt, projectOf, taskTitle } from '../lib/officeConfig';
 import { TemplateDraft } from '../lib/SimulationContext';
+import { errorMessage } from '../lib/errors';
 
 /** How an employee's state reads in the team list. */
 const STATE_LABEL: Record<string, string> = {
@@ -36,11 +38,6 @@ export default function Dashboard() {
     answerTask, saveRole, removeRole, saveTemplate, removeTemplate, runTemplate, setMonthlyCap,
   } = useSimulation();
 
-  const [name, setName] = useState('');
-  const [role, setRole] = useState<AgentRole>('Junior Dev');
-  const [api, setApi] = useState<APIProvider>('Ollama');
-  // Empty = the provider's default model from the settings
-  const [model, setModel] = useState('');
   const [rolesOpen, setRolesOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   // Whether the task being assigned starts with a plan; null = the office's default
@@ -63,13 +60,12 @@ export default function Dashboard() {
       const files = await readAttachments(picked);
       if (files.length === 0) return notify('Nothing to attach: the folder only holds files that are skipped (such as node_modules).');
       setAttached({ files, folder });
-    } catch (e: any) {
-      notify(e.message);
+    } catch (e) {
+      notify(errorMessage(e));
     }
   };
   // A template being created from a task on the board
   const [templateDraft, setTemplateDraft] = useState<TemplateDraft | null>(null);
-  const [avatar, setAvatar] = useState('/avatars/robot.png');
 
   // State for inline task assignment
   const [activeTaskAgent, setActiveTaskAgent] = useState<string | null>(null);
@@ -94,19 +90,10 @@ export default function Dashboard() {
     setFocusTask({ id, at: Date.now() });
   };
   const questionCount = agents.reduce((sum, a) => sum + a.taskQueue.filter(t => t.status === 'WAITING_FOR_INPUT' || t.status === 'PLAN_REVIEW').length, 0);
-  // The role picked in the form, or the most junior one while the list loads or after it changed
-  const hireRole = roles.some(r => r.name === role) ? role : roles[roles.length - 1]?.name || '';
   const activeTaskCount = agents.reduce(
     (sum, a) => sum + (a.taskQueue || []).filter(t => t.status === 'PENDING' || t.status === 'IN_PROGRESS').length,
     0
   );
-
-  const handleAddEmployee = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || !hireRole) return;
-    addAgent({ name, role: hireRole, api, avatar, model: model.trim() || undefined });
-    setName('');
-  };
 
   const startTemplateFrom = (agent: Agent, task: TaskItem) => {
     setTemplateDraft({ name: taskTitle(task).slice(0, 60), prompt: cleanPrompt(task.prompt), agentId: agent.id, budget: task.budget, project: task.project ? projectOf(task) : undefined, schedule: 'none', weekday: 1, minuteOfDay: 9 * 60 });
@@ -196,55 +183,7 @@ return (
       </div>
     </div>
 
-    <div className={`${styles.card} ${styles.hireCard}`}>
-      <button type="button" className={styles.cardToggle} onClick={() => setHireOpen(!showHire)} aria-expanded={showHire}>
-        <UserPlus size={16} />
-        <h3>Hire new employee</h3>
-        {showHire ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-      </button>
-      {showHire && (
-      <form onSubmit={handleAddEmployee} className={styles.form}>
-        <input
-          type="text"
-          placeholder="Employee Name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className={styles.input}
-        />
-        <AvatarPicker value={avatar} onChange={setAvatar} />
-        <div className={styles.row}>
-          <select aria-label="Role" value={hireRole} onChange={(e) => setRole(e.target.value)} className={styles.select}>
-            {roles.map(r => <option key={r.name} value={r.name}>{r.name}</option>)}
-          </select>
-          <select aria-label="AI provider" value={api} onChange={(e) => { setApi(e.target.value as APIProvider); setModel(''); }} className={styles.select}>
-            <option value="OpenAI">OpenAI</option>
-            <option value="Anthropic">Anthropic (Claude)</option>
-            <option value="Gemini">Google Gemini</option>
-            <option value="Grok">Grok (xAI)</option>
-            <option value="Ollama">Ollama (Local)</option>
-          </select>
-        </div>
-        <input
-          type="text"
-          list="model-suggestions"
-          aria-label="Model"
-          title="The model this employee uses. Leave empty for the provider's default from the settings."
-          placeholder="Model (empty = provider default)"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          className={styles.input}
-          autoComplete="off"
-          spellCheck={false}
-        />
-        <datalist id="model-suggestions">
-          {(MODEL_SUGGESTIONS[api] || []).map(m => <option key={m} value={m} />)}
-        </datalist>
-        <button type="submit" className={styles.button}>
-          Hire Employee
-        </button>
-      </form>
-      )}
-    </div>
+    <HireForm roles={roles} open={showHire} onToggle={() => setHireOpen(!showHire)} onHire={addAgent} />
 
     <div className={`${styles.card} ${styles.panelCard}`}>
       <div className={styles.searchBox}>
@@ -459,54 +398,7 @@ return (
             )}
 
             {/* Task Queue Panel */}
-            {expandedAgentId === agent.id && (
-              <div className={styles.historyPanel} onClick={(e) => e.stopPropagation()}>
-                <h4 className={styles.historyTitle}>Task Queue & History</h4>
-                {agent.taskQueue && agent.taskQueue.length > 0 ? (
-                  <div className={styles.historyList}>
-                    {agent.taskQueue.map((task) => (
-                      <div key={task.id} className={styles.historyItem} data-status={task.status}>
-                        <div className={styles.historyHeader}>
-                          <span className={styles.taskStatus}>{task.status}</span>
-                          <span className={styles.taskAssigner}>
-                            {task.kind === 'REVIEW' ? 'Final review · ' : task.parentId ? 'Sub-task · ' : ''}From: {task.assignedBy}
-                          </span>
-                        </div>
-                        <div className={styles.historyPrompt}>
-                          <strong>{task.title || 'Task'}:</strong> {cleanPrompt(task.prompt)}
-                        </div>
-                        {task.response && (
-                          <div className={styles.historyResponse}>
-                            <strong>Response:</strong> {task.response}{task.clipped ? ' (open the task on the task board for the rest)' : ''}
-                          </div>
-                        )}
-                        {task.error && (
-                          <div className={styles.historyError}>
-                            <strong>Error:</strong> {task.error}
-                          </div>
-                        )}
-                        <div className={styles.historyFooter}>
-                          <span className={styles.historyTime}>
-                            {new Date(task.timestamp).toLocaleTimeString()}
-                            {task.tokens ? ` · ${formatUsage(task.tokens, task.cost)}` : ''}
-                          </span>
-                          {task.status === 'PENDING' && (
-                            <button
-                              className={styles.cancelTaskBtn}
-                              onClick={() => cancelTask(task.id)}
-                            >
-                              Cancel
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className={styles.noHistory}>No tasks assigned yet.</div>
-                )}
-              </div>
-            )}
+            {expandedAgentId === agent.id && <TaskHistory agent={agent} onCancel={cancelTask} />}
           </div>
         ))}
         {agents.length === 0 && (

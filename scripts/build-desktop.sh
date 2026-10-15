@@ -2,18 +2,21 @@
 # Builds the desktop app for the system it is run on:
 #   macOS    dist-desktop/Deskforce-<version>-<arch>.dmg
 #   Windows  dist-desktop/Deskforce-Setup-<version>.exe   (run it from Git Bash)
+#   Linux    dist-desktop/Deskforce-<version>-<arch>.AppImage and .deb
 #
 #   npm run dist:mac            build the .dmg for this Mac's processor
 #   npm run dist:win            build the installer on Windows
+#   npm run dist:linux          build the AppImage and .deb on Linux
 #   npm run dist:mac -- --dir   build only the app, without an installer (faster, for trying it out)
 #
-# Releases are built by .github/workflows/release.yml, which runs this script on both systems.
+# Releases are built by .github/workflows/release.yml, which runs this script on all three systems.
 #
 # Options, as environment variables:
 #
 #   MAC_ARCH=arm64|x64|both     which processors to build for on macOS (default: this Mac's).
 #                               "both" makes one app for Apple Silicon and one for Intel.
 #   WIN_ARCH=x64|arm64          the processor to build for on Windows (default: x64).
+#   LINUX_ARCH=x64|arm64        the processor to build for on Linux (default: this machine's).
 #
 #   Signing on macOS (needs an Apple Developer ID; without it the app is only ad-hoc signed and
 #   has to be allowed under System Settings → Privacy & Security the first time on another Mac):
@@ -28,6 +31,7 @@
 #     DESKFORCE_UPDATE_REPO=owner/repo      public GitHub releases, or
 #     DESKFORCE_UPDATE_URL=https://...      any web folder holding the files from dist-desktop/
 #   Upload the installers and the latest*.yml files of each new version there (on macOS also the .zip).
+#   On Linux only the AppImage updates itself; the .deb is updated by installing the new one.
 #   macOS only installs updates for a signed app, so an ad-hoc signed one never looks for them.
 #
 # Needs Node 22 or newer.
@@ -42,8 +46,8 @@ RESOURCES=build-desktop
 node -e 'if (Number(process.versions.node.split(".")[0]) < 22) { console.error(`Node 22 or newer is required (this is ${process.version}). Run: nvm use`); process.exit(1); }'
 
 PLATFORM=$(node -p 'process.platform')
-if [ "$PLATFORM" != darwin ] && [ "$PLATFORM" != win32 ]; then
-  echo "The desktop app is built on macOS (for macOS) or on Windows (for Windows)." >&2
+if [ "$PLATFORM" != darwin ] && [ "$PLATFORM" != win32 ] && [ "$PLATFORM" != linux ]; then
+  echo "The desktop app is built on the system it is for: macOS, Windows or Linux." >&2
   exit 1
 fi
 
@@ -57,6 +61,11 @@ if [ "$PLATFORM" = darwin ]; then
     both) ARCHS="arm64 x64" ;;
     arm64|x64) ARCHS="${MAC_ARCH:-$HOST_ARCH}" ;;
     *) echo "MAC_ARCH must be arm64, x64 or both." >&2; exit 1 ;;
+  esac
+elif [ "$PLATFORM" = linux ]; then
+  case "${LINUX_ARCH:-$HOST_ARCH}" in
+    arm64|x64) ARCHS="${LINUX_ARCH:-$HOST_ARCH}" ;;
+    *) echo "LINUX_ARCH must be x64 or arm64." >&2; exit 1 ;;
   esac
 else
   case "${WIN_ARCH:-x64}" in
@@ -130,7 +139,7 @@ if [ "$PLATFORM" = darwin ]; then
   done
   iconutil -c icns "$ICONSET" -o "$RESOURCES/icon.icns"
 else
-  # electron-builder turns the picture into an .ico itself
+  # electron-builder turns the picture into an .ico on Windows, and uses it as it is on Linux
   cp public/avatars/robot.png "$RESOURCES/icon.png"
 fi
 
@@ -167,6 +176,10 @@ if [ "$PLATFORM" = darwin ]; then
     echo "  no Developer ID given: the app is ad-hoc signed and will not update itself"
     BUILDER_ARGS+=(-c.mac.identity=null)
   fi
+elif [ "$PLATFORM" = linux ]; then
+  BUILDER_ARGS+=(--linux)
+  # The AppImage can replace itself with a newer one; the .deb is updated by installing the new one
+  if [ "${#FEED_ARGS[@]}" -gt 0 ]; then UPDATES=1; fi
 else
   BUILDER_ARGS+=(--win)
   if [ "$SIGNED" = 1 ]; then

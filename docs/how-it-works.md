@@ -1,6 +1,6 @@
 # How it works
 
-The office engine (`src/lib/server/engine.ts`) starts with the server and checks the queue every second. Each task is given to the employee's model together with the client's request, the manager's plan, what colleagues finished, and the project's files. The model then works by calling tools until it replies with a summary:
+The office engine (`src/lib/server/engine/`) starts with the server and checks the queue every second. Each task is given to the employee's model together with the client's request, the manager's plan, what colleagues finished, and the project's files. The model then works by calling tools until it replies with a summary:
 
 | Tool | Effect |
 | --- | --- |
@@ -29,4 +29,4 @@ The guardrail limits, the per-model prices and the discounts for cached input us
 | AI | OpenAI SDK (OpenAI and Grok), Anthropic SDK, Gemini and Ollama HTTP APIs, all streamed, with native tool calling |
 | History | `isomorphic-git` (no `git` program needed) |
 
-Where each part lives in the code is described in [CONTRIBUTING.md](https://github.com/husseinzayat3/Deskforce/blob/main/CONTRIBUTING.md#where-things-are).
+How the server, the engine, the providers and the project folders fit together is described in [ARCHITECTURE.md](https://github.com/husseinzayat3/Deskforce/blob/main/ARCHITECTURE.md). Where each part lives in the code is described in [CONTRIBUTING.md](https://github.com/husseinzayat3/Deskforce/blob/main/CONTRIBUTING.md#where-things-are).

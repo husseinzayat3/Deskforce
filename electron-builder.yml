@@ -38,6 +38,16 @@ win:
   target:
     - nsis
 
+linux:
+  icon: build-desktop/icon.png
+  category: Development
+  executableName: deskforce
+  synopsis: A virtual office of AI agents
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+  target:
+    - AppImage
+    - deb
+
 # An installer with the usual steps: where to install, then a shortcut and an uninstaller
 nsis:
   oneClick: false

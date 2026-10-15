@@ -1,29 +1,25 @@
-import { Agent, Role, TaskItem } from '../types';
-import { OFFICE_CONFIG, FINISHED_STATUSES, TaskRef, STEP_TOKENS, delegationDepth, estimateCost, rankOf, startOfMonth, taskTitle, budgetOf, cleanPrompt, formatBudget, indexTasks, getAncestors, getRoot, getTree, projectOf, projectNameFromPrompt, slugifyProjectName, similarity, spentOn, stripGuardrailNote, titleFromDescription } from '../officeConfig';
-import { buildSystemPrompt, stripTags, FILE_PATH_PLACEHOLDER, PROJECT_NAME_PLACEHOLDER, REVIEW_TASK_PROMPT } from '../agentPrompt';
-import { buildReport, buildTranscript, reportFilename, transcriptFilename } from '../report';
-import * as store from './store';
-import { ToolsUnsupportedError, addCost, defaultModel, hasRealModel, runModel, searchProviderFor, searchWeb } from './llm';
-import { AgentTool, runAgent } from './agent';
-import { applyEdit } from '../edits';
-import { fetchPage } from './web';
-import { checksAllowed, runChecks } from './checks';
-import { getSetting } from './settings';
-import { attachedImages, deleteProjectFile, installAttachments, listProjectFiles, projectExists, projectPath, readProjectContents, viewProjectFile, writeProjectFile } from './workspace';
-import { authorFor, commitProject } from './git';
-import { appendLive, endLive, startLive } from './live';
-import { nextRunTime } from '../schedule';
-import { ensureSlack, postToSlack, slackHome } from './slack';
-import { parseFileBlocks } from '../fileBlocks';
+import { Agent, Role, TaskItem } from '../../types';
+import { OFFICE_CONFIG, STEP_TOKENS, delegationDepth, estimateCost, rankOf, budgetOf, cleanPrompt, formatBudget, indexTasks, getAncestors, getRoot, getTree, projectOf, projectNameFromPrompt, slugifyProjectName, similarity, spentOn, stripGuardrailNote, titleFromDescription } from '../../officeConfig';
+import { buildSystemPrompt, stripTags, FILE_PATH_PLACEHOLDER, PROJECT_NAME_PLACEHOLDER } from '../../agentPrompt';
+import * as store from '../store';
+import { ToolsUnsupportedError, addCost, defaultModel, hasRealModel, runModel, searchProviderFor, searchWeb } from '../llm';
+import { AgentTool, runAgent } from '../agent';
+import { applyEdit } from '../../edits';
+import { fetchPage } from '../web';
+import { checksAllowed, runChecks } from '../checks';
+import { getSetting } from '../settings';
+import { attachedImages, deleteProjectFile, installAttachments, listProjectFiles, projectExists, readProjectContents, viewProjectFile, writeProjectFile } from '../workspace';
+import { authorFor, commitProject } from '../git';
+import { appendLive } from '../live';
+import { postToSlack, slackHome } from '../slack';
+import { parseFileBlocks } from '../../fileBlocks';
+import { errorMessage } from '../../errors';
+import { begin, engine, finish, withoutTools } from './state';
+import { claimProjectName, commitTitle, filesMentioned, normalizeFilename, projectHistoryOf } from './projects';
+import { holdMeeting } from './meeting';
 
-/**
- * The office engine: runs queued tasks on the server, so work carries on when no browser is open.
- * One engine runs per database, whatever the number of tabs or server processes.
- */
+/** Runs one task: builds its prompt, lets the model work through tools or tags, and saves what it did. */
 
-const TICK_MS = 1000;
-/** Another process is considered gone when it has not checked in for this long. */
-const HEARTBEAT_STALE_MS = 10_000;
 /** How long an employee waits after a rate-limit error before taking the next task. */
 const RATE_LIMIT_COOLDOWN_MS = 60_000;
 
@@ -32,217 +28,8 @@ const DUPLICATE_SIMILARITY = 0.8;
 
 const PLACEHOLDER_FILENAMES = new Set([FILE_PATH_PLACEHOLDER, 'filename.ext']);
 
-/** Title of the task that repairs a project whose checks failed. */
-const FIX_CHECKS_TITLE = 'Fix failing checks';
-
 /** How many times one task may stop to ask the user something. */
 const MAX_QUESTIONS_PER_TASK = 2;
-
-/** Something that looks like a file path or file name inside an assignment. */
-const FILE_MENTION = /[\w./-]*[\w-]+\.[a-z][a-z0-9]{0,5}\b/gi;
-
-interface EngineState {
-  timer?: ReturnType<typeof setInterval>;
-  /** The tick function the timer runs; replaced when this module is reloaded in development. */
-  tick?: () => void;
-  /** Task id → agent id, for every model call in flight. Survives module reloads. */
-  running: Map<string, string>;
-  /** Agent id → time before which the agent takes no new task. */
-  cooldown: Map<string, number>;
-  /** Task id → the switch that stops its model call. */
-  aborts: Map<string, AbortController>;
-  /** Set after a tick that found nothing to do; while it still matches, ticks stay cheap. */
-  idleKey?: string;
-  /** Root tasks whose project checks are running right now. */
-  verifying: Set<string>;
-  /** Task id → messages the user sent to it while it runs. Only tasks that can take them are listed. */
-  inbox: Map<string, string[]>;
-}
-
-const globalForEngine = globalThis as unknown as { __officeEngine?: EngineState };
-const engine: EngineState = (globalForEngine.__officeEngine ??= { running: new Map(), cooldown: new Map(), aborts: new Map(), verifying: new Set(), inbox: new Map() });
-// An engine kept across a development reload may predate this field
-engine.aborts ??= new Map();
-engine.verifying ??= new Set();
-engine.inbox ??= new Map();
-
-/** Marks a task as running and returns the signal that stops its model calls. */
-const begin = (taskId: string, agentId: string) => {
-  const controller = new AbortController();
-  engine.running.set(taskId, agentId);
-  engine.aborts.set(taskId, controller);
-  store.setAgentState(agentId, 'WORKING');
-  startLive(taskId);
-  return controller.signal;
-};
-
-/**
- * Passes a message from the user to a task that is running. False when the task cannot take
- * one: it is not running, or its model works in a single answer with no steps in between.
- */
-export const steerTask = (taskId: string, message: string) => {
-  const waiting = engine.inbox.get(taskId);
-  if (!waiting) return false;
-  waiting.push(message);
-  return true;
-};
-
-const finish = (taskId: string, agentId: string) => {
-  engine.inbox.delete(taskId);
-  endLive(taskId);
-  engine.aborts.delete(taskId);
-  engine.running.delete(taskId);
-  store.setAgentState(agentId, 'IDLE');
-};
-
-/**
- * Stops the model calls of running tasks, so a halted task stops costing money straight away.
- * With no argument every running task is stopped; otherwise only those of the given employee.
- */
-export const abortRunning = (agentId?: string) => {
-  engine.running.forEach((owner, taskId) => {
-    if (!agentId || owner === agentId) engine.aborts.get(taskId)?.abort();
-  });
-};
-
-/** True while this process is the one running the office. Checks in on every call. */
-const holdOwnership = () => {
-  const now = Date.now();
-  let owner: { pid: number; beat: number } | undefined;
-  try {
-    owner = JSON.parse(store.getMeta('engine') || 'null') || undefined;
-  } catch {
-    // unreadable entry: take over
-  }
-  if (owner && owner.pid !== process.pid && now - owner.beat < HEARTBEAT_STALE_MS) return false;
-  store.setMeta('engine', JSON.stringify({ pid: process.pid, beat: now }));
-  return true;
-};
-
-/** Returns `base`, or `base-2`, `base-3`… when a project with that name already exists. */
-const claimProjectName = (base: string, taskId: string, agents: Agent[]) => {
-  const taken = new Set<string>();
-  agents.forEach(a => a.taskQueue.forEach(t => t.project && taken.add(t.project)));
-
-  for (let n = 1; n <= 20; n++) {
-    const candidate = n === 1 ? base : `${base}-${n}`;
-    if (!taken.has(candidate) && !projectExists(candidate)) return candidate;
-  }
-  return `${base}-${taskId.slice(0, 4)}`;
-};
-
-/** Models sometimes repeat the project folder in front of the path, which would nest the project inside itself. */
-const normalizeFilename = (filename: string, slug: string) => {
-  let cleaned = filename.trim().replace(/^[`'"]+|[`'"]+$/g, '').replace(/\\/g, '/').replace(/^\.?\/+/, '');
-  for (const prefix of [`workspace/projects/${slug}/`, `projects/${slug}/`, `${slug}/`]) {
-    if (cleaned.startsWith(prefix)) cleaned = cleaned.slice(prefix.length);
-  }
-  return cleaned;
-};
-
-/** Earlier requests on the same project and how they ended, oldest first. */
-const projectHistoryOf = (rootTask: TaskItem, agents: Agent[], taskIndex: Map<string, TaskRef>) => {
-  if (!rootTask.project) return [];
-  return agents
-    .flatMap(a => a.taskQueue)
-    .filter(t => !t.parentId && t.id !== rootTask.id && t.project === rootTask.project && t.status === 'COMPLETED' && t.timestamp < rootTask.timestamp)
-    .sort((a, b) => a.timestamp - b.timestamp)
-    .slice(-OFFICE_CONFIG.MAX_HISTORY_ITEMS)
-    .map(t => {
-      const review = getTree(t.id, taskIndex).find(ref => ref.task.kind === 'REVIEW' && ref.task.status === 'COMPLETED');
-      return { request: cleanPrompt(t.prompt), outcome: review?.task.summary || t.summary || 'No summary was recorded.' };
-    });
-};
-
-/** Files an assignment says it will touch, lower-cased. */
-const filesMentioned = (description: string) =>
-  new Set((description.match(FILE_MENTION) || []).map(f => f.toLowerCase().replace(/^\.?\//, '')).filter(f => !/^\d+\.\d+$/.test(f)));
-
-/** First line of a commit message for a task. */
-const commitTitle = (task: TaskItem) => (task.kind === 'REVIEW' && !task.title ? 'Final review' : taskTitle(task)).slice(0, 72);
-
-/**
- * A meeting: the participants were asked to change the same files, so before any of them starts
- * they agree who does what. The first proposes, the others answer in turn, and the last one
- * writes down the plan they will all follow.
- */
-const holdMeeting = async (host: Agent, task: TaskItem, agents: Agent[], overBudget: boolean) => {
-  // No money left for talking: the tasks that wait on the meeting still run one after the other
-  if (overBudget) {
-    store.transitionTask(task.id, 'PENDING', 'CANCELLED', { reviewNote: 'Skipped: the task budget was reached.' });
-    return;
-  }
-  if (!store.transitionTask(task.id, 'PENDING', 'IN_PROGRESS')) return;
-  const signal = begin(task.id, host.id);
-
-  const wasCancelled = () => {
-    const current = store.getTask(task.id);
-    return !current || current.status === 'CANCELLED';
-  };
-
-  try {
-    const guests = agents.filter(a => a.id !== host.id && task.participants?.includes(a.id));
-    if (guests.length === 0) throw new Error('The other participants are no longer in the office.');
-    const speakers = [host, ...guests];
-
-    const rules = 'You are in a short meeting because you were asked to change the same files. Plain text only, no tags unless asked, and under 150 words.';
-    const turns: { speaker: Agent; text: string }[] = [];
-    let tokens = 0;
-    let cost: number | undefined = 0;
-    const models = new Set<string>();
-
-    for (let index = 0; index < speakers.length; index++) {
-      const speaker = speakers[index];
-      const others = speakers.filter(a => a.id !== speaker.id).map(a => `${a.name}, the ${a.role}`).join(' and ');
-      const isLast = index === speakers.length - 1;
-      const instruction = index === 0
-        ? 'Propose how to split the work so nobody overwrites anyone else: who changes which file or which part of it, and in what order.'
-        : isLast
-          ? 'Agree with what was said or adjust it, then give the final plan all of you will follow inside [PLAN] ... [/PLAN].'
-          : 'Agree with the proposal or adjust it, briefly.';
-
-      appendLive(task.id, `${index > 0 ? '\n\n' : ''}${speaker.name}: `);
-      const turn = await runModel({
-        provider: speaker.api,
-        model: speaker.model,
-        systemPrompt: `You are ${speaker.name}, the ${speaker.role}. You are meeting ${others}. ${rules}\n${instruction}`,
-        prompt: `${task.prompt}${turns.length ? `\n\nSaid so far:\n${turns.map(t => `${t.speaker.name}: ${t.text}`).join('\n\n')}` : ''}`,
-        maxTokens: 600,
-        onText: delta => appendLive(task.id, delta),
-        signal,
-      });
-
-      store.addAgentTokens(speaker.id, turn.tokens);
-      tokens += turn.tokens;
-      cost = addCost(cost, turn.cost);
-      models.add(turn.model);
-      turns.push({ speaker, text: turn.response.trim() });
-    }
-
-    if (wasCancelled()) return;
-
-    const closing = turns[turns.length - 1].text;
-    store.updateTask(task.id, {
-      status: 'COMPLETED',
-      completedAt: Date.now(),
-      response: turns.map(t => `${t.speaker.name}: ${t.text}`).join('\n\n'),
-      summary: closing.match(/\[PLAN\]([\s\S]*?)\[\/PLAN\]/i)?.[1].trim() || closing,
-      tokens,
-      cost,
-      model: Array.from(models).join(' / '),
-    });
-  } catch (e: any) {
-    if (!wasCancelled()) {
-      // The tasks waiting on the meeting still run, one after the other
-      store.updateTask(task.id, { status: 'FAILED', error: e?.message || 'Unknown error' });
-    }
-  } finally {
-    finish(task.id, host.id);
-  }
-};
-
-/** Provider and model pairs found unable to call tools; they use the tag format from then on. */
-const withoutTools = new Set<string>();
 
 const MAX_SEARCHES_PER_TASK = 6;
 const MAX_FETCHES_PER_TASK = 8;
@@ -252,7 +39,7 @@ const MAX_READ_CHARS = 60_000;
 
 const text = (value: unknown) => (typeof value === 'string' ? value : '');
 
-const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles: Role[]) => {
+export const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles: Role[]) => {
   const taskIndex = indexTasks(agents);
   const rootTask = getRoot(task.id, taskIndex)?.task || task;
   const isReview = task.kind === 'REVIEW';
@@ -757,9 +544,9 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       for (const block of blocks.files) {
         try {
           await saveFile(block.path, block.content);
-        } catch (e: any) {
+        } catch (e) {
           // An echoed format example is not a problem worth reporting
-          if (!/placeholder/.test(e.message)) problems.push(`${block.path}: ${e.message}`);
+          if (!/placeholder/.test(errorMessage(e))) problems.push(`${block.path}: ${errorMessage(e)}`);
         }
       }
 
@@ -799,8 +586,8 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     if (changed && slug) {
       try {
         commit = await commitProject(slug, `${commitTitle(task)}\n\nTask ${task.id}, by ${agent.name} (${agent.role})`, authorFor(agent.name));
-      } catch (e: any) {
-        problems.push(`History: the files were saved but could not be committed (${e.message}).`);
+      } catch (e) {
+        problems.push(`History: the files were saved but could not be committed (${errorMessage(e)}).`);
       }
     }
 
@@ -907,10 +694,10 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       reviewStatus: undefined,
       reviewNote: problems.length > 0 ? problems.join('\n') : undefined
     });
-  } catch (e: any) {
+  } catch (e) {
     if (wasCancelled()) return;
 
-    const message: string = e?.message || 'Unknown error';
+    const message: string = errorMessage(e) || 'Unknown error';
     const isRateLimit = message.toLowerCase().includes('429') || message.toLowerCase().includes('rate limit');
     store.updateTask(task.id, { status: 'FAILED', error: message });
     store.pushEvent(`Task for ${agent.name} failed.${isRateLimit ? ' (Rate limit hit — pausing this employee for a minute)' : ''}`, 'failed');
@@ -922,228 +709,4 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     if (store.getTask(task.id)) store.updateTask(task.id, { durationMs: (task.durationMs || 0) + (Date.now() - startedAt) });
     finish(task.id, agent.id);
   }
-};
-
-const FOLLOWUP_PROMPT = 'Your team has finished what you delegated. Check that their work fits together and delivers what you planned, and deal with anything that is missing.';
-
-/**
- * Shows a manager what its team delivered. Once everything a task delegated has finished, its
- * owner gets a follow-up task: it reads the results, fixes gaps, and may delegate one more round.
- * Returns true when a follow-up was queued.
- */
-const followUps = (agents: Agent[]) => {
-  if (OFFICE_CONFIG.FOLLOWUP_ROUNDS < 1) return false;
-  const taskIndex = indexTasks(agents);
-  const all = Array.from(taskIndex.values());
-  let queued = false;
-
-  for (const { task, agent } of all) {
-    if (task.kind || task.status !== 'COMPLETED') continue;
-    const children = all.filter(ref => ref.task.parentId === task.id);
-    if (children.some(ref => ref.task.kind === 'FOLLOWUP')) continue;
-    if (!children.some(ref => !ref.task.kind && ref.task.status === 'COMPLETED')) continue;
-
-    // Everything underneath has to be over, however deep it went
-    const below = all.filter(ref => getAncestors(ref.task.id, taskIndex).some(ancestor => ancestor.task.id === task.id));
-    if (below.some(ref => !FINISHED_STATUSES.has(ref.task.status))) continue;
-
-    // No more money, no more rounds
-    const root = getRoot(task.id, taskIndex)?.task || task;
-    if (spentOn(getTree(root.id, taskIndex)) >= budgetOf(root)) continue;
-
-    store.createTask(agent.id, FOLLOWUP_PROMPT, 'Office', { parentId: task.id, kind: 'FOLLOWUP' });
-    queued = true;
-  }
-  return queued;
-};
-
-/**
- * Wraps up finished projects: one final review once all delegated work is done, then the report.
- * Only for tasks the user assigned, and only for projects named under the current scheme.
- */
-const wrapUp = (agents: Agent[]) => {
-  const taskIndex = indexTasks(agents);
-
-  for (const agent of agents) {
-    for (const root of agent.taskQueue) {
-      if (root.parentId || root.status !== 'COMPLETED' || !root.project || root.report) continue;
-
-      const tree = getTree(root.id, taskIndex);
-      if (tree.some(ref => !FINISHED_STATUSES.has(ref.task.status))) continue;
-
-      const subtasks = tree.filter(ref => ref.task.id !== root.id);
-
-      // Several people worked on it: have the owner check the pieces fit together before reporting.
-      // Work redone after a review (a retry or a revision) gets a fresh review.
-      const work = subtasks.filter(ref => !ref.task.kind && ref.task.status === 'COMPLETED');
-      const lastWork = Math.max(root.completedAt || 0, ...work.map(ref => ref.task.completedAt || 0));
-      const reviewed = subtasks.some(ref => ref.task.kind === 'REVIEW' && ref.task.timestamp >= lastWork);
-      if (work.length > 0 && !reviewed) {
-        store.createTask(agent.id, REVIEW_TASK_PROMPT, 'Office', { parentId: root.id, kind: 'REVIEW' });
-        continue;
-      }
-
-      // Optional: check the files and run the tests. A failure gets one round of fixing, then a second run.
-      if (checksAllowed()) {
-        if (engine.verifying.has(root.id)) continue;
-        const runs = root.checkRuns || 0;
-        const failed = root.checkPassed === false;
-        const fixes = subtasks.filter(ref => ref.task.title === FIX_CHECKS_TITLE);
-        // Checks stored by an earlier run of this task stay as they are once a fix was tried
-        const fixedSince = fixes.some(ref => ref.task.status === 'COMPLETED');
-
-        if (runs === 0 || (runs === 1 && failed && fixedSince)) {
-          const project = root.project;
-          engine.verifying.add(root.id);
-          runChecks(project)
-            .then(result => store.updateTask(root.id, { checkRuns: runs + 1, checkPassed: result.ran ? result.passed : undefined, checkOutput: result.output }))
-            .catch(e => store.updateTask(root.id, { checkRuns: runs + 1, checkPassed: undefined, checkOutput: `The checks could not be run: ${e.message}` }))
-            .finally(() => engine.verifying.delete(root.id));
-          continue;
-        }
-        if (runs === 1 && failed && fixes.length === 0) {
-          store.createTask(agent.id, `The project's checks failed. Fix the files so that they pass, changing as little as possible.\n\n${root.checkOutput || ''}`, 'Office', {
-            parentId: root.id,
-            kind: 'REVIEW',
-            title: FIX_CHECKS_TITLE,
-          });
-          continue;
-        }
-      }
-
-      const rootRef = { task: root, agent };
-      const report = buildReport(rootRef, tree, projectPath(root.project));
-      store.updateTask(root.id, { report });
-      try {
-        // Follow-up requests on the same project get their own numbered report
-        const sequence = agents.flatMap(a => a.taskQueue).filter(t => !t.parentId && t.project === root.project && t.timestamp <= root.timestamp).length;
-        writeProjectFile(root.project, reportFilename(sequence), report);
-        writeProjectFile(root.project, transcriptFilename(sequence), buildTranscript(rootRef, tree));
-        void commitProject(root.project, `Add the report for: ${commitTitle(root)}`).catch(() => undefined);
-        store.pushEvent(`Report ready: ${root.project}`, 'report');
-      } catch (e: any) {
-        store.pushEvent(`Could not save the report files for ${root.project}: ${e.message}`);
-      }
-    }
-  }
-};
-
-/** Spending this calendar month against the cap the user set (0 = no cap). */
-export const monthStatus = (now = Date.now()) => {
-  const cap = Number(store.getMeta('monthlyCap')) || 0;
-  // Deleted tasks still count: what they cost was spent
-  const spent = store.spendSince(startOfMonth(now)) + store.deletedSpend(startOfMonth(now));
-  return { cap, spent, reached: cap > 0 && spent >= cap };
-};
-
-/** Assigns the tasks whose schedule has come due. Returns true when anything changed. */
-const runSchedules = (agents: Agent[], now: number, capReached: boolean) => {
-  let changed = false;
-  for (const template of store.listTemplates()) {
-    if (template.schedule === 'none' || !template.nextRunAt || template.nextRunAt > now) continue;
-    changed = true;
-
-    const label = `Schedule: ${template.name}`;
-    const agent = agents.find(a => a.id === template.agentId);
-    const taskIndex = indexTasks(agents);
-    // A run is still going while its task, or anything delegated from it, is unfinished
-    const stillRunning = agents.some(a => a.taskQueue.some(t =>
-      !t.parentId && t.assignedBy === label && getTree(t.id, taskIndex).some(ref => !FINISHED_STATUSES.has(ref.task.status))
-    ));
-
-    if (!agent) {
-      store.pushEvent(`Scheduled task "${template.name}" was skipped: its employee is no longer in the office.`);
-    } else if (stillRunning) {
-      store.pushEvent(`Scheduled task "${template.name}" was skipped: its previous run has not finished.`);
-    } else if (capReached) {
-      store.pushEvent(`Scheduled task "${template.name}" was skipped: the monthly cap is reached.`);
-    } else {
-      // Keep working in the same project when it still exists; otherwise the run starts a new one
-      const project = template.project && projectExists(template.project) ? template.project : undefined;
-      // Nobody is watching a scheduled run, so it does not stop for a plan to be approved
-      store.createTask(agent.id, template.prompt, label, { budget: template.budget, project });
-      store.pushEvent(`Scheduled task started: ${template.name}`);
-    }
-    store.markTemplateRun(template.id, now, nextRunTime(template, now));
-  }
-  return changed;
-};
-
-const tick = () => {
-  try {
-    if (!holdOwnership()) return;
-
-    // Only the process that runs the office talks to Slack
-    ensureSlack();
-
-    const now = Date.now();
-    const monthKey = String(startOfMonth(now));
-
-    // Nothing changed since a tick that found nothing to do: skip reading the whole office again
-    const waiting = engine.running.size > 0
-      || engine.verifying.size > 0
-      || Array.from(engine.cooldown.values()).some(until => until > now)
-      || store.hasDueTemplate(now);
-    const startKey = `${store.getVersion()}:${monthKey}`;
-    if (!waiting && engine.idleKey === startKey) return;
-
-    const month = monthStatus(now);
-    let agents = store.getState();
-    if (runSchedules(agents, now, month.reached)) agents = store.getState();
-
-    const roles = store.listRoles();
-    const busy = new Set(engine.running.values());
-    const tasksById = new Map(agents.flatMap(a => a.taskQueue).map(t => [t.id, t]));
-
-    // After a restart nothing is really in flight: put interrupted work back in the queue
-    for (const agent of agents) {
-      for (const task of agent.taskQueue) {
-        if (task.status === 'IN_PROGRESS' && !engine.running.has(task.id)) {
-          store.transitionTask(task.id, 'IN_PROGRESS', 'PENDING');
-          task.status = 'PENDING';
-        }
-      }
-      if (agent.state === 'WORKING' && !busy.has(agent.id)) store.setAgentState(agent.id, 'IDLE');
-    }
-
-    // The monthly cap stops new work from starting; whatever is running finishes
-    if (month.reached && store.getMeta('capNotified') !== monthKey) {
-      store.setMeta('capNotified', monthKey);
-      store.pushEvent(`Monthly cap of $${month.cap.toFixed(2)} reached. No new tasks will start until you raise it or the month ends.`, 'limit');
-    }
-
-    if (!store.isPaused() && !month.reached) {
-      for (const agent of agents) {
-        if (busy.has(agent.id) || (engine.cooldown.get(agent.id) || 0) > now) continue;
-
-        // Oldest pending task first, leaving out those that wait for another task to finish
-        const nextTask = agent.taskQueue
-          .filter(t => {
-            if (t.status !== 'PENDING') return false;
-            const blocker = t.blockedBy ? tasksById.get(t.blockedBy) : undefined;
-            return !blocker || FINISHED_STATUSES.has(blocker.status);
-          })
-          .reduce<TaskItem | undefined>((oldest, t) => (!oldest || t.timestamp <= oldest.timestamp ? t : oldest), undefined);
-        if (nextTask) void executeTask(agent, nextTask, agents, roles);
-      }
-    }
-
-    // A manager looks at its team's work before the project is reviewed and reported
-    if (!followUps(agents)) wrapUp(agents);
-
-    // Idle only if this tick changed nothing: a task it queued (a review, a fix) must be picked up by the next one
-    engine.idleKey = `${store.getVersion()}:${monthKey}` === startKey ? startKey : undefined;
-  } catch (e) {
-    console.error('Office engine tick failed:', e);
-  }
-};
-
-/** Starts the engine if it is not running yet. Safe to call on every request. */
-export const ensureEngine = () => {
-  if (engine.timer && engine.tick === tick) return;
-  if (engine.timer) clearInterval(engine.timer);
-  engine.tick = tick;
-  engine.timer = setInterval(tick, TICK_MS);
-  // Do not keep the process alive just for the engine
-  engine.timer.unref?.();
 };

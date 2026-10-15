@@ -3,6 +3,26 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_LAYOUT, OfficeLayout, deskFor as seatFor } from './layout';
 import { Agent, AgentState, Attachment, EventKind, Note, OfficeFile, Role, Template } from './types';
+import { errorMessage } from './errors';
+
+/** What GET /api/office answers. Parts that did not change since the version the browser has are left out. */
+interface OfficeSnapshot {
+  version?: string;
+  paused?: boolean;
+  agents?: Agent[];
+  roles?: Role[];
+  templates?: Template[];
+  month?: MonthStatus;
+  planFirst?: boolean;
+  handbook?: string;
+  notes?: Note[];
+  layout?: OfficeLayout;
+  live?: Record<string, string>;
+  projectsDir?: string;
+  events?: { message: string; kind?: EventKind }[];
+  lastEventId?: number;
+  error?: string;
+}
 
 type NewAgent = Pick<Agent, 'name' | 'role' | 'api' | 'avatar' | 'model'>;
 
@@ -261,7 +281,7 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const focusAgent = useCallback((agentId: string) => setFocus({ agentId, at: Date.now() }), []);
 
   /** Takes over what the server sent, unless a newer answer was applied already. */
-  const apply = useCallback((seq: number, data: any) => {
+  const apply = useCallback((seq: number, data: OfficeSnapshot) => {
     if (seq < appliedSeq.current) return false;
     appliedSeq.current = seq;
     if (Array.isArray(data.agents)) setServerAgents(data.agents);
@@ -328,8 +348,8 @@ export const SimulationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `Office request failed (${res.status})`);
       apply(seq, data);
-    } catch (e: any) {
-      notify(e.message || 'The office server could not be reached.');
+    } catch (e) {
+      notify(errorMessage(e) || 'The office server could not be reached.');
     }
   }, [apply, notify]);
 

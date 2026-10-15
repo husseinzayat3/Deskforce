@@ -1,4 +1,4 @@
-// Finishes the app after electron-builder has laid it out (macOS and Windows).
+// Finishes the app after electron-builder has laid it out (macOS, Windows and Linux).
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -8,7 +8,7 @@ const ARCH_NAMES = { 1: 'x64', 3: 'arm64' };
 
 exports.default = async context => {
   const platform = context.electronPlatformName;
-  if (platform !== 'darwin' && platform !== 'win32') return;
+  if (platform !== 'darwin' && platform !== 'win32' && platform !== 'linux') return;
 
   const project = context.packager.projectDir;
   const appPath = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);

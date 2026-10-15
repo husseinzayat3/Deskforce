@@ -5,6 +5,7 @@ import { ImageUp, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { BUILT_IN_BACKGROUND, DEFAULT_LAYOUT, Desk, MAP_SIZE, OfficeLayout, Point, ROOM_LABELS, RoomName } from '../lib/layout';
 import { Role } from '../lib/types';
 import { uploadPicture } from '../lib/upload';
+import { errorMessage } from '../lib/errors';
 
 /** What is being dragged or is selected: a desk by its position in the list, or a room by name. */
 type Target = { kind: 'desk'; index: number } | { kind: 'room'; name: RoomName };
@@ -78,8 +79,8 @@ export default function LayoutEditor({ layout, roles, scale, onSave, onCancel, n
     try {
       const url = await uploadPicture('map', file);
       setDraft(prev => ({ ...prev, background: url }));
-    } catch (e: any) {
-      notify(e.message);
+    } catch (e) {
+      notify(errorMessage(e));
     } finally {
       setBusy(false);
     }

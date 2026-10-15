@@ -38,7 +38,7 @@ It is built for one person on their own computer: there is no login, and it only
 
 ## Can I add my own tools or integrations?
 
-The code is open: tools are defined in `src/lib/server/engine.ts`, and contributions are welcome ([CONTRIBUTING.md](https://github.com/husseinzayat3/Deskforce/blob/main/CONTRIBUTING.md)). If you would rather have it done for you, see [Custom builds](custom-builds.md).
+The code is open: tools are defined in `src/lib/server/engine/runTask.ts`, and contributions are welcome ([CONTRIBUTING.md](https://github.com/husseinzayat3/Deskforce/blob/main/CONTRIBUTING.md)). If you would rather have it done for you, see [Custom builds](custom-builds.md).
 
 ## Can I change the office's look?
 

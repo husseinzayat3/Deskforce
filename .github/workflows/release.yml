@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a tag such as v0.2.0 builds the installers for macOS and Windows and puts them in a
+# Pushing a tag such as v0.2.0 builds the installers for macOS, Windows and Linux and puts them in a
 # draft release. Read the draft, then publish it: only a published release is offered to
 # people who download the app, and to installed apps that update themselves.
 #
@@ -35,6 +35,8 @@ jobs:
             os: macos-latest
           - name: Windows
             os: windows-latest
+          - name: Linux
+            os: ubuntu-latest
     defaults:
       run:
         shell: bash
@@ -76,6 +78,12 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: bash scripts/build-desktop.sh
 
+      - name: Build the app (Linux)
+        if: runner.os == 'Linux'
+        env:
+          DESKFORCE_UPDATE_REPO: ${{ github.repository }}
+        run: bash scripts/build-desktop.sh
+
       # Nobody tries every build by hand, so each app is started here and its office asked
       # for an answer. A build that does not start never reaches the release.
       - name: Start the apps (macOS)
@@ -91,6 +99,13 @@ jobs:
         if: runner.os == 'Windows'
         run: node scripts/smoke-desktop.js dist-desktop/win-unpacked/Deskforce.exe
 
+      # A virtual display, and no setuid sandbox helper: an installed .deb sets that one up
+      - name: Start the app (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          xvfb-run -a node scripts/smoke-desktop.js dist-desktop/linux-unpacked/deskforce --no-sandbox
+
       - uses: actions/upload-artifact@v7
         with:
           name: installers-${{ matrix.name }}
@@ -101,6 +116,8 @@ jobs:
             dist-desktop/*.dmg
             dist-desktop/*.zip
             dist-desktop/*.exe
+            dist-desktop/*.AppImage
+            dist-desktop/*.deb
             dist-desktop/*.blockmap
             dist-desktop/latest*.yml
 

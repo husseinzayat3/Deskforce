@@ -6,6 +6,7 @@ import { checksAllowed, runChecks } from '../../../lib/server/checks';
 import { refuseForeignRequest, refuseUnknownHost } from '../../../lib/server/guard';
 import * as store from '../../../lib/server/store';
 import { getRoot, indexTasks } from '../../../lib/officeConfig';
+import { errorMessage } from '../../../lib/errors';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,9 +62,9 @@ export async function GET(req: NextRequest) {
       canPreview: Boolean(previewEntry(project)),
       canCheck: checksAllowed(),
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Workspace GET error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }
 
@@ -110,8 +111,8 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ error: `Unknown action: ${body.action}` }, { status: 400 });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Workspace POST error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }

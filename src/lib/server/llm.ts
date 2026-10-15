@@ -1,8 +1,10 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
+import type { BetaMessageStreamParams } from '@anthropic-ai/sdk/resources/beta/messages';
 import { APIProvider } from '../types';
 import { estimateCost } from '../officeConfig';
 import { getSetting } from './settings';
+import { errorMessage } from '../errors';
 
 const DEFAULT_MAX_TOKENS = 4000;
 /** Upper bound on a single model call, whatever the caller asks for. */
@@ -150,14 +152,14 @@ async function* readLines(res: Response) {
 // --- OpenAI and compatible (Grok) ------------------------------------------------
 
 const openAiCompatible = (client: OpenAI, model: string, tokenParam: 'max_tokens' | 'max_completion_tokens', cacheKeys = false): Adapter => async ({ system, turns, tools, maxTokens, cacheKey }, { onText, beat, signal }) => {
-  const messages: any[] = [];
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   if (system) messages.push({ role: 'system', content: system });
   for (const turn of turns) {
     if (turn.role === 'user') {
       messages.push({
         role: 'user',
         content: turn.images?.length
-          ? [{ type: 'text', text: turn.text }, ...turn.images.map(image => ({ type: 'image_url', image_url: { url: `data:${image.mediaType};base64,${image.data}` } }))]
+          ? [{ type: 'text' as const, text: turn.text }, ...turn.images.map(image => ({ type: 'image_url' as const, image_url: { url: `data:${image.mediaType};base64,${image.data}` } }))]
           : turn.text,
       });
     } else if (turn.role === 'assistant') {
@@ -165,7 +167,7 @@ const openAiCompatible = (client: OpenAI, model: string, tokenParam: 'max_tokens
         role: 'assistant',
         content: turn.text || null,
         ...(turn.toolCalls?.length
-          ? { tool_calls: turn.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input) } })) }
+          ? { tool_calls: turn.toolCalls.map(call => ({ id: call.id, type: 'function' as const, function: { name: call.name, arguments: JSON.stringify(call.input) } })) }
           : {}),
       });
     } else {
@@ -176,13 +178,13 @@ const openAiCompatible = (client: OpenAI, model: string, tokenParam: 'max_tokens
   const stream = await client.chat.completions.create({
     messages,
     model,
-    [tokenParam]: maxTokens,
+    ...(tokenParam === 'max_tokens' ? { max_tokens: maxTokens } : { max_completion_tokens: maxTokens }),
     stream: true,
     stream_options: { include_usage: true },
-    ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}),
+    ...(tools.length ? { tools: tools.map(tool => ({ type: 'function' as const, function: tool })) } : {}),
     // These providers cache a repeated prompt start by themselves; the key keeps a conversation's steps together
     ...(cacheKeys && cacheKey ? { prompt_cache_key: cacheKey } : {}),
-  } as any, { signal }) as unknown as AsyncIterable<any>;
+  }, { signal });
 
   let text = '';
   let finishReason: string | null = null;
@@ -231,36 +233,39 @@ const openAiCompatible = (client: OpenAI, model: string, tokenParam: 'max_tokens
 // --- Anthropic ------------------------------------------------------------------
 
 const anthropic = (client: Anthropic, model: string): Adapter => async ({ system, turns, tools, maxTokens, nativeWeb, cacheKey }, { onText, beat, signal }) => {
-  const messages: any[] = [];
+  const messages: Anthropic.MessageParam[] = [];
   for (const turn of turns) {
     if (turn.role === 'user') {
       messages.push({
         role: 'user',
         content: turn.images?.length
-          ? [...turn.images.map(image => ({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } })), { type: 'text', text: turn.text }]
+          ? [
+            ...turn.images.map(image => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: image.mediaType as Anthropic.Base64ImageSource['media_type'], data: image.data } })),
+            { type: 'text' as const, text: turn.text },
+          ]
           : turn.text,
       });
     } else if (turn.role === 'assistant') {
       // The original blocks go back unchanged: they carry the model's thinking and its tool calls
-      messages.push({ role: 'assistant', content: turn.raw ?? turn.text });
+      messages.push({ role: 'assistant', content: (turn.raw as Anthropic.ContentBlockParam[] | undefined) ?? turn.text });
     } else {
       messages.push({
         role: 'user',
-        content: turn.results.map(result => ({ type: 'tool_result', tool_use_id: result.id, content: result.output, ...(result.isError ? { is_error: true } : {}) })),
+        content: turn.results.map(result => ({ type: 'tool_result' as const, tool_use_id: result.id, content: result.output, ...(result.isError ? { is_error: true } : {}) })),
       });
     }
   }
 
   const filtering = ANTHROPIC_FILTERING_WEB.test(model);
-  const allTools: any[] = tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters }));
+  const allTools: Anthropic.ToolUnion[] = tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters as Anthropic.Tool.InputSchema }));
   if (nativeWeb) {
     allTools.push(
-      { type: filtering ? 'web_search_20260209' : 'web_search_20250305', name: 'web_search', max_uses: 5 },
-      { type: filtering ? 'web_fetch_20260209' : 'web_fetch_20250910', name: 'web_fetch', max_uses: 5 },
+      filtering ? { type: 'web_search_20260209', name: 'web_search', max_uses: 5 } : { type: 'web_search_20250305', name: 'web_search', max_uses: 5 },
+      filtering ? { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 5 } : { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 5 },
     );
   }
 
-  const params: any = {
+  const params: Anthropic.MessageStreamParams = {
     model,
     max_tokens: Math.max(maxTokens, THINKING_HEADROOM_TOKENS),
     // In a loop: one marker after the tools and system prompt, which never change within a task, and the
@@ -276,13 +281,15 @@ const anthropic = (client: Anthropic, model: string): Adapter => async ({ system
     let outputTokens = 0;
     let cacheReadTokens = 0;
     let cacheWriteTokens = 0;
-    let message: any;
+    let message: Anthropic.Message | Anthropic.Beta.BetaMessage;
 
     for (let round = 0; ; round++) {
       // Where the model supports it, a request it declines for policy reasons is retried
       // by Anthropic on its default fallback model inside the same call.
       message = ANTHROPIC_FALLBACK_MODELS.has(model)
-        ? await client.beta.messages.stream({ ...params, betas: [ANTHROPIC_FALLBACK_BETA], fallbacks: 'default' }, { signal }).on('streamEvent', beat).on('text', onText).finalMessage()
+        // The same request on the beta endpoint, which takes the fallback chain; the two parameter
+        // types differ only in fields this request does not set
+        ? await client.beta.messages.stream({ ...params, betas: [ANTHROPIC_FALLBACK_BETA], fallbacks: 'default' } as BetaMessageStreamParams, { signal }).on('streamEvent', beat).on('text', onText).finalMessage()
         : await client.messages.stream(params, { signal }).on('streamEvent', beat).on('text', onText).finalMessage();
 
       const usage = message.usage;
@@ -294,7 +301,7 @@ const anthropic = (client: Anthropic, model: string): Adapter => async ({ system
 
       // A long web search can pause the turn; sending it back lets the model carry on
       if (message.stop_reason !== 'pause_turn' || round >= MAX_PAUSE_RESUMES) break;
-      params.messages = [...params.messages, { role: 'assistant', content: message.content }];
+      params.messages = [...params.messages, { role: 'assistant', content: message.content as Anthropic.ContentBlockParam[] }];
     }
 
     if (message.stop_reason === 'refusal') {
@@ -332,6 +339,24 @@ const anthropic = (client: Anthropic, model: string): Adapter => async ({ system
 
 // --- Gemini ---------------------------------------------------------------------
 
+/** A part of Gemini's answer: text, a function call, or the model's thinking with its signature. */
+interface GeminiPart {
+  text?: string;
+  thought?: boolean;
+  functionCall?: { id?: string; name: string; args?: Record<string, unknown> };
+  [other: string]: unknown;
+}
+
+/** One event of Gemini's stream. */
+interface GeminiChunk {
+  candidates?: {
+    content?: { parts?: GeminiPart[] };
+    finishReason?: string;
+    groundingMetadata?: { groundingChunks?: { web?: { uri?: string; title?: string } }[] };
+  }[];
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number; cachedContentTokenCount?: number };
+}
+
 const gemini = (apiKey: string, model: string, grounded = false): Adapter => async ({ system, turns, tools, maxTokens }, { onText, beat, signal }) => {
   const contents = turns.map(turn => {
     if (turn.role === 'user') {
@@ -365,14 +390,14 @@ const gemini = (apiKey: string, model: string, grounded = false): Adapter => asy
   let text = '';
   let finishReason = '';
   let usage: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number; cachedContentTokenCount?: number } = {};
-  const parts: any[] = [];
+  const parts: GeminiPart[] = [];
   const toolCalls: ToolCall[] = [];
   const sources = new Set<string>();
 
   for await (const line of readLines(res)) {
     beat();
     if (!line.startsWith('data:')) continue;
-    let chunk: any;
+    let chunk: GeminiChunk;
     try {
       chunk = JSON.parse(line.slice(5));
     } catch {
@@ -415,8 +440,27 @@ const gemini = (apiKey: string, model: string, grounded = false): Adapter => asy
 
 // --- Ollama ---------------------------------------------------------------------
 
+/** A message in Ollama's chat format. */
+interface OllamaMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  images?: string[];
+  tool_calls?: { function: { name: string; arguments: Record<string, unknown> } }[];
+  tool_name?: string;
+}
+
+/** One line of Ollama's stream; the last one carries the totals. */
+interface OllamaChunk {
+  error?: string;
+  message?: { content?: string; tool_calls?: { function?: { name?: string; arguments?: string | Record<string, unknown> } }[] };
+  done?: boolean;
+  done_reason?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
+}
+
 const ollama = (url: string, model: string): Adapter => async ({ system, turns, tools, maxTokens }, { onText, beat, signal }) => {
-  const messages: any[] = [];
+  const messages: OllamaMessage[] = [];
   if (system) messages.push({ role: 'system', content: system });
   for (const turn of turns) {
     if (turn.role === 'user') {
@@ -446,9 +490,9 @@ const ollama = (url: string, model: string): Adapter => async ({ system, turns, 
         options: { num_predict: maxTokens, num_ctx: OLLAMA_NUM_CTX }
       })
     });
-  } catch (e: any) {
+  } catch (e) {
     if (signal.aborted) throw e;
-    throw new Error(`Cannot reach Ollama at ${url}. Is it running? (${e.message})`);
+    throw new Error(`Cannot reach Ollama at ${url}. Is it running? (${errorMessage(e)})`);
   }
 
   if (!res.ok) {
@@ -458,13 +502,13 @@ const ollama = (url: string, model: string): Adapter => async ({ system, turns, 
   }
 
   let text = '';
-  let last: any = {};
+  let last: OllamaChunk = {};
   const toolCalls: ToolCall[] = [];
   // One JSON object per line; the last one carries the totals
   for await (const line of readLines(res)) {
     beat();
     if (!line.trim()) continue;
-    let chunk: any;
+    let chunk: OllamaChunk;
     try {
       chunk = JSON.parse(line);
     } catch {
@@ -729,13 +773,13 @@ export const searchWeb = async (query: string, preferred: APIProvider, signal?: 
     }
     // OpenAI's search models search on every request
     const client = new OpenAI({ apiKey: getSetting('openaiKey') });
-    const completion: any = await client.chat.completions.create({
+    const completion = await client.chat.completions.create({
       model,
       web_search_options: {},
       messages: [{ role: 'system', content: SEARCH_SYSTEM }, { role: 'user', content: query }],
-    } as any, { signal: io.signal });
+    }, { signal: io.signal });
     const message = completion.choices[0].message;
-    const links: string[] = (message.annotations || []).filter((a: any) => a.url_citation?.url).map((a: any) => `- ${a.url_citation.title || 'source'}: ${a.url_citation.url}`);
+    const links = (message.annotations || []).filter(a => a.url_citation?.url).map(a => `- ${a.url_citation.title || 'source'}: ${a.url_citation.url}`);
     return {
       text: `${message.content || ''}${links.length ? `\n\nSources:\n${Array.from(new Set(links)).join('\n')}` : ''}`,
       toolCalls: [],

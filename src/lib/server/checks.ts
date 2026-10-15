@@ -5,6 +5,7 @@ import { execFile } from 'child_process';
 import { DATA_DIR } from './paths';
 import { listProjectFiles, projectPath, readProjectFile } from './workspace';
 import { getSetting } from './settings';
+import { errorMessage } from '../errors';
 
 /**
  * Optional checks of a project's files, off unless the user turns them on in the settings.
@@ -140,9 +141,9 @@ export const runChecks = async (project: string): Promise<CheckResult> => {
     ran = true;
     try {
       JSON.parse(data);
-    } catch (e: any) {
+    } catch (e) {
       passed = false;
-      lines.push(`✗ JSON syntax: ${file}\n${e.message}`);
+      lines.push(`✗ JSON syntax: ${file}\n${errorMessage(e)}`);
     }
   }
 

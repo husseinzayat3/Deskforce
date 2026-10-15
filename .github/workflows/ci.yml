@@ -15,6 +15,8 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -26,8 +28,43 @@ jobs:
         run: npm run lint
       - name: Type check
         run: npm run typecheck
-      - name: Tests
-        run: npm test
+      - name: Tests, with coverage
+        run: npm run test:coverage
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f coverage/lcov.info ]; then
+            echo '### Test coverage of src/lib' >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            npx c8 report --reporter=text-summary >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Only once a CODECOV_TOKEN secret is set (codecov.io, free for public repositories)
+      - name: Upload coverage
+        if: env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@v7
+        with:
+          files: coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # The whole office in a real browser, with mock answers instead of a model
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: e2e-screenshots
+          path: test-results/
+          retention-days: 7
 
   # Only builds the image (nothing is pushed), so a broken Dockerfile shows up in the pull request
   docker:

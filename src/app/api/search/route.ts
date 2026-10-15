@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { searchOffice } from '../../../lib/server/search';
 import { refuseUnknownHost } from '../../../lib/server/guard';
+import { errorMessage } from '../../../lib/errors';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,8 +11,8 @@ export async function GET(req: NextRequest) {
   if (refusal) return refusal;
   try {
     return NextResponse.json(searchOffice((new URL(req.url).searchParams.get('q') || '').slice(0, 200)));
-  } catch (error: any) {
+  } catch (error) {
     console.error('Search error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }

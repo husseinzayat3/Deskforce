@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { saveMedia } from '../../../lib/server/media';
 import { refuseForeignRequest } from '../../../lib/server/guard';
+import { errorMessage } from '../../../lib/errors';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,7 +15,7 @@ export async function POST(req: NextRequest) {
     if (body.kind !== 'map' && body.kind !== 'avatar') return NextResponse.json({ error: 'Unknown kind of picture' }, { status: 400 });
     if (typeof body.data !== 'string') return NextResponse.json({ error: 'Missing picture' }, { status: 400 });
     return NextResponse.json({ url: saveMedia(body.kind, body.data) });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+  } catch (error) {
+    return NextResponse.json({ error: errorMessage(error) }, { status: 400 });
   }
 }

@@ -22,7 +22,80 @@ const safeParseArray = (value: string): string[] | undefined => {
   }
 };
 
-const toTask = (t: any): TaskItem => ({
+/** A row of the tasks table as SQLite returns it: absent values are null, flags are 0 or 1. */
+interface TaskRow {
+  id: string;
+  agentId: string;
+  prompt: string;
+  assignedBy: string;
+  status: TaskStatus;
+  /** The response, or the error of a failed task. */
+  answer: string | null;
+  createdAt: number;
+  completedAt: number | null;
+  parentId: string | null;
+  summary: string | null;
+  files: string | null;
+  tokens: number | null;
+  reviewStatus: TaskItem['reviewStatus'] | null;
+  reviewNote: string | null;
+  project: string | null;
+  cost: number | null;
+  model: string | null;
+  kind: TaskItem['kind'] | null;
+  report: string | null;
+  title: string | null;
+  feedback: string | null;
+  budget: number | null;
+  commitId: string | null;
+  question: string | null;
+  clarifications: string | null;
+  participants: string | null;
+  blockedBy: string | null;
+  archived: number | null;
+  attachments: string | null;
+  checkRuns: number | null;
+  checkPassed: number | null;
+  checkOutput: string | null;
+  needsPlan: number | null;
+  cachedTokens: number | null;
+  durationMs: number | null;
+  retries: number | null;
+  revisions: number | null;
+  compareId: string | null;
+  apiOverride: APIProvider | null;
+  modelOverride: string | null;
+  plan: string | null;
+  planApproved: number | null;
+  planEstimate: number | null;
+  planNote: string | null;
+}
+
+type AgentRow = Omit<Agent, 'model' | 'currentTask' | 'taskQueue' | 'helpRequestedFrom'> & { model: string | null };
+
+interface TemplateRow {
+  id: string;
+  name: string;
+  prompt: string;
+  agentId: string | null;
+  budget: number | null;
+  project: string | null;
+  schedule: Template['schedule'];
+  weekday: number;
+  minuteOfDay: number;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+}
+
+interface NoteRow {
+  id: string;
+  text: string;
+  author: string;
+  project: string | null;
+  at: number;
+}
+
+const toTask = (t: TaskRow): TaskItem => ({
   id: t.id,
   prompt: t.prompt,
   title: t.title || undefined,
@@ -127,13 +200,14 @@ export const listEvents = (afterId: number) =>
 /** Every employee with their tasks, newest task first. */
 export const getState = (): Agent[] => {
   const db = getDb();
-  const agents = db.prepare('SELECT * FROM agents').all() as any[];
-  const tasks = db.prepare('SELECT * FROM tasks ORDER BY createdAt DESC, rowid DESC').all() as any[];
+  const agents = db.prepare('SELECT * FROM agents').all() as AgentRow[];
+  const tasks = db.prepare('SELECT * FROM tasks ORDER BY createdAt DESC, rowid DESC').all() as TaskRow[];
 
   return agents.map(agent => {
     const taskQueue = tasks.filter(t => t.agentId === agent.id).map(toTask);
     return {
       ...agent,
+      model: agent.model ?? undefined,
       currentTask: taskQueue.find(t => t.status === 'IN_PROGRESS')?.prompt ?? null,
       taskQueue,
     };
@@ -178,13 +252,13 @@ export const addAgentTokens = (agentId: string, tokens: number) => {
 // --- tasks ------------------------------------------------------------------
 
 export const getTask = (taskId: string): (TaskItem & { agentId: string }) | undefined => {
-  const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as any;
+  const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as TaskRow | undefined;
   return row ? { ...toTask(row), agentId: row.agentId } : undefined;
 };
 
 /** The task whose files are held by this commit. */
 export const getTaskByCommit = (commitId: string): (TaskItem & { agentId: string }) | undefined => {
-  const row = getDb().prepare('SELECT * FROM tasks WHERE commitId = ?').get(commitId) as any;
+  const row = getDb().prepare('SELECT * FROM tasks WHERE commitId = ?').get(commitId) as TaskRow | undefined;
   return row ? { ...toTask(row), agentId: row.agentId } : undefined;
 };
 
@@ -321,7 +395,7 @@ export const deleteRole = (name: string) => {
 
 // --- templates --------------------------------------------------------------
 
-const toTemplate = (t: any): Template => ({
+const toTemplate = (t: TemplateRow): Template => ({
   id: t.id,
   name: t.name,
   prompt: t.prompt,
@@ -336,7 +410,7 @@ const toTemplate = (t: any): Template => ({
 });
 
 export const listTemplates = (): Template[] =>
-  (getDb().prepare('SELECT * FROM templates ORDER BY name').all() as any[]).map(toTemplate);
+  (getDb().prepare('SELECT * FROM templates ORDER BY name').all() as TemplateRow[]).map(toTemplate);
 
 /** Creates the template, or replaces the one with the same id. Returns its id. */
 export const saveTemplate = (template: Omit<Template, 'id' | 'lastRunAt'> & { id?: string }) => {
@@ -394,7 +468,7 @@ export const setHandbook = (text: string) => {
 
 /** Newest first. */
 export const listNotes = (): Note[] =>
-  (getDb().prepare('SELECT id, text, author, project, at FROM notes ORDER BY at DESC, rowid DESC').all() as any[])
+  (getDb().prepare('SELECT id, text, author, project, at FROM notes ORDER BY at DESC, rowid DESC').all() as NoteRow[])
     .map(n => ({ id: n.id, text: n.text, author: n.author, project: n.project || undefined, at: n.at }));
 
 export const addNote = (text: string, author: string, project?: string) => {

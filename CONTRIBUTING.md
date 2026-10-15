@@ -2,6 +2,8 @@
 
 Thank you for wanting to help. Bug reports, fixes, documentation and new features are all welcome.
 
+Everyone taking part is expected to follow the [code of conduct](CODE_OF_CONDUCT.md).
+
 ## Before you start
 
 - **A bug or a small fix:** open a pull request directly.
@@ -27,10 +29,12 @@ The office keeps its database and the generated projects in `workspace/`, which 
 
 ## Where things are
 
+How the parts work together is described in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 | Path | What it holds |
 | --- | --- |
 | `src/app/api/` | The HTTP API. Routes check the request and call into `src/lib/server/`. |
-| `src/lib/server/engine.ts` | The engine that takes tasks from the queue and runs them. |
+| `src/lib/server/engine/` | The engine: the queue and its tick (`index.ts`), running one task and its tools (`runTask.ts`), meetings, follow-ups, reviews and reports (`wrapUp.ts`), schedules and the monthly cap. |
 | `src/lib/server/llm.ts` | The providers (OpenAI, Anthropic, Gemini, Grok, Ollama) and tool calling. |
 | `src/lib/server/workspace.ts`, `git.ts` | Project files on disk and their history. |
 | `src/lib/server/guard.ts`, `src/lib/netGuard.ts` | Which requests the office accepts, and which addresses agents may fetch. |
@@ -56,12 +60,13 @@ A new page also needs an entry in the sidebar in `docs/.vitepress/config.mts`. T
 ```bash
 npm run lint
 npm run typecheck
-npm test
+npm test              # unit, provider and engine tests (about half a minute)
+npm run test:e2e      # the office in a real browser; run `npx playwright install chromium` once first
 ```
 
-All three run on every pull request and must pass.
+All of these run on every pull request and must pass. `npm run test:coverage` shows how much of `src/lib` the tests cover.
 
-- **Add a test** for new logic in `src/lib/`. Tests use Node's built-in runner; copy the style of the files in `tests/`.
+- **Add a test** for new logic in `src/lib/`. Tests use Node's built-in runner; copy the style of the files in `tests/`. To test something a model does, script its answers with the fake provider in `tests/helpers/fakeProvider.ts`, as `tests/engine.test.ts` does: no key or network is needed.
 - **Changes to the security code** (`guard.ts`, `netGuard.ts`, path handling in `workspace.ts`, the sandbox in `checks.ts`, `electron/main.js`) need a test that shows what is refused, and a sentence in the pull request on why the change is safe.
 - **Match the code around you:** small functions, a comment that says why rather than what, and messages a non-programmer can understand, since they are shown to the user.
 - **Update the docs** (the README, or the page in `docs/` it belongs to) when you add a setting, a command or a behaviour someone using the office would notice.

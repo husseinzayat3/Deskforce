@@ -1,5 +1,6 @@
 import { APIProvider } from '../types';
 import { ImagePart, ToolCall, ToolResult, ToolSpec, Turn, addCost, runStep } from './llm';
+import { errorMessage } from '../errors';
 
 /**
  * The tool loop: the model works by calling functions (read a file, write a file, delegate…)
@@ -185,7 +186,7 @@ const runTool = async (tools: AgentTool[], call: ToolCall): Promise<ToolOutcome>
   if (!tool) return { output: `There is no tool called "${call.name}". Available: ${tools.map(t => t.name).join(', ')}.`, isError: true };
   try {
     return await tool.run(call.input || {});
-  } catch (e: any) {
-    return { output: str(e?.message) || 'The tool failed.', isError: true };
+  } catch (e) {
+    return { output: str(errorMessage(e)) || 'The tool failed.', isError: true };
   }
 };

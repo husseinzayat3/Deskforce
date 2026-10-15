@@ -14,7 +14,7 @@
 
 ![Deskforce demo: the CEO plans a bakery website, the team builds it, and the result opens in a preview](docs/demo.gif)
 
-<sub>A real run: four employees on gpt-4o built this bakery landing page in about a minute, for $0.11.</sub>
+<sub>A real run: four employees on gpt-4o built this bakery landing page in about a minute, for $0.11. More in [examples/](examples/).</sub>
 
 </div>
 
@@ -22,9 +22,9 @@
 
 [![Download for macOS](https://img.shields.io/badge/macOS-Download-111827?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/husseinzayat3/Deskforce/releases/latest)
 [![Download for Windows](https://img.shields.io/badge/Windows-Download-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/husseinzayat3/Deskforce/releases/latest)
-[![Linux with Docker](https://img.shields.io/badge/Linux-Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](docs/docker.md)
+[![Download for Linux](https://img.shields.io/badge/Linux-Download-E95420?style=for-the-badge&logo=linux&logoColor=white)](docs/getting-started.md#desktop-app)
 
-macOS (Apple Silicon and Intel) and Windows installers are on the [Releases page](https://github.com/husseinzayat3/Deskforce/releases/latest); add your API keys in the app's settings. The apps are not signed with a paid certificate yet, so [allow them the first time](docs/getting-started.md#desktop-app).
+Installers for macOS (Apple Silicon and Intel), Windows and Linux (AppImage and .deb) are on the [Releases page](https://github.com/husseinzayat3/Deskforce/releases/latest); add your API keys in the app's settings. The apps are not signed with a paid certificate yet, so [allow them the first time](docs/getting-started.md#desktop-app).
 
 **Docker** (Intel and ARM):
 
@@ -52,7 +52,7 @@ No key yet? Providers without one answer with mock text, so you can explore the 
 - 💬 **Works from Slack** — ask for work, check progress and approve plans from a Slack message.
 - 🔒 **Runs on your computer** — files stay on your machine, and with Ollama nothing leaves it at all.
 
-[All features →](docs/features.md)
+[All features →](docs/features.md) · [Examples with real costs →](examples/)
 
 ## Screenshots
 
@@ -99,7 +99,7 @@ Frameworks are the right choice when you are building agents into your own produ
 ## Documentation
 
 - **Docs:** [husseinzayat3.github.io/Deskforce](https://husseinzayat3.github.io/Deskforce/) — getting started, concepts, providers, costs, Slack, FAQ and troubleshooting (also readable in [docs/](docs/README.md))
-- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) — setup, tests, and what a pull request needs
+- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) — setup, tests, and what a pull request needs · [ARCHITECTURE.md](ARCHITECTURE.md) — how it is built
 - **Security:** [the security model](docs/security.md) · report a vulnerability via [SECURITY.md](SECURITY.md)
 - **License:** [MIT](LICENSE) © 2026 Hussein Zayat — free to use, change and redistribute, including commercially. The default floorplan and avatars in `public/` were generated with Google Gemini and are distributed under the same terms.
 
