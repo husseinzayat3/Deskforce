@@ -29,6 +29,8 @@ The office keeps its database and the generated projects in `workspace/`, which 
 
 ## Where things are
 
+How the parts work together is described in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 | Path | What it holds |
 | --- | --- |
 | `src/app/api/` | The HTTP API. Routes check the request and call into `src/lib/server/`. |
