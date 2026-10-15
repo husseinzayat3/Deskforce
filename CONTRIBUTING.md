@@ -32,7 +32,7 @@ The office keeps its database and the generated projects in `workspace/`, which 
 | Path | What it holds |
 | --- | --- |
 | `src/app/api/` | The HTTP API. Routes check the request and call into `src/lib/server/`. |
-| `src/lib/server/engine.ts` | The engine that takes tasks from the queue and runs them. |
+| `src/lib/server/engine/` | The engine: the queue and its tick (`index.ts`), running one task and its tools (`runTask.ts`), meetings, follow-ups, reviews and reports (`wrapUp.ts`), schedules and the monthly cap. |
 | `src/lib/server/llm.ts` | The providers (OpenAI, Anthropic, Gemini, Grok, Ollama) and tool calling. |
 | `src/lib/server/workspace.ts`, `git.ts` | Project files on disk and their history. |
 | `src/lib/server/guard.ts`, `src/lib/netGuard.ts` | Which requests the office accepts, and which addresses agents may fetch. |
