@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2, Download, FileText, RotateCcw, Pencil, FolderPlus, FolderOpen, FolderTree, GitCommitHorizontal, BookmarkPlus, Send, X, Archive, ArchiveRestore, Trash2, MoreHorizontal } from 'lucide-react';
+import { ChevronDown, ChevronRight, CornerDownRight, ListTree, OctagonX, CheckCircle2, Download, FileText, RotateCcw, Pencil, FolderPlus, FolderOpen, FolderTree, GitCommitHorizontal, BookmarkPlus, Send, Archive, ArchiveRestore, Trash2, MoreHorizontal } from 'lucide-react';
 import { Agent, TaskItem, TaskStatus } from '../lib/types';
-import { OFFICE_CONFIG, FINISHED_STATUSES, budgetOf, cleanPrompt, formatBudget, formatUsage, projectOf, sumUsage, taskTitle } from '../lib/officeConfig';
+import { FINISHED_STATUSES, budgetOf, formatBudget, formatUsage, projectOf, sumUsage, taskTitle } from '../lib/officeConfig';
 import ProjectBrowser from './ProjectBrowser';
-import { formatDuration } from '../lib/performance';
+import TaskDetails from './TaskDetails';
+import PlanReview from './PlanReview';
+import TaskComposer, { ComposerMode } from './TaskComposer';
 import styles from './TaskTree.module.css';
 
 interface TaskNode {
@@ -39,19 +41,11 @@ interface TaskTreeProps {
   onContinue: (agentId: string, project: string, prompt: string, budget?: number, plan?: boolean) => void;
 }
 
-/** The one-line form open under a task: feedback for a revision, or a new request for the same project. */
+/** The one-line form open under a task, and which task it is under. */
 interface Composer {
   taskId: string;
-  mode: 'revise' | 'continue' | 'answer' | 'replan' | 'steer';
+  mode: ComposerMode;
 }
-
-const COMPOSER_TEXT: Record<Composer['mode'], { placeholder: string; send: string }> = {
-  revise: { placeholder: 'What should be changed?', send: 'Send back' },
-  continue: { placeholder: 'New request for this project…', send: 'Assign' },
-  answer: { placeholder: 'Your answer…', send: 'Answer' },
-  replan: { placeholder: 'What should the plan do differently?', send: 'Ask for a new plan' },
-  steer: { placeholder: 'Message to the employee while they work…', send: 'Send' },
-};
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
   AWAITING_APPROVAL: 'Needs Approval',
@@ -497,36 +491,14 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
           </div>
 
           {task.status === 'PLAN_REVIEW' && task.plan && (
-            <div className={`${styles.detailSummary} ${styles.callout}`}>
-              <strong>{agent.name} proposes:</strong>
-              {planEdit?.taskId === task.id ? (
-                <>
-                  <textarea
-                    aria-label="The plan"
-                    value={planEdit.text}
-                    onChange={e => setPlanEdit({ taskId: task.id, text: e.target.value })}
-                    style={{ display: 'block', width: '100%', minHeight: 160, marginTop: 6, padding: 8, fontFamily: 'inherit', fontSize: 11, lineHeight: 1.5, border: '1px solid #fbbf24', borderRadius: 6, resize: 'vertical', color: '#0f172a', background: '#fff' }}
-                  />
-                  <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                    <button
-                      className={`${styles.cancelBtn} ${styles.approveBtn}`}
-                      disabled={!planEdit.text.trim()}
-                      onClick={() => { onApprovePlan(task.id, planEdit.text.trim()); setPlanEdit(null); }}
-                    >
-                      <CheckCircle2 size={11} />
-                      Approve my version
-                    </button>
-                    <button className={`${styles.cancelBtn} ${styles.quietBtn}`} onClick={() => setPlanEdit(null)}>Discard changes</button>
-                  </div>
-                </>
-              ) : (
-                <p>{task.plan}</p>
-              )}
-              <p style={{ fontWeight: 600 }}>
-                Estimated cost: {task.planEstimate === undefined ? 'unknown (a model in the plan has no listed price)' : task.planEstimate === 0 ? 'free (local models)' : `about $${task.planEstimate < 0.01 ? task.planEstimate.toFixed(4) : task.planEstimate.toFixed(2)}`}
-                <span style={{ fontWeight: 400 }}> · a rough figure from the size of each step · budget {formatBudget(budgetOf(task))}</span>
-              </p>
-            </div>
+            <PlanReview
+              task={task}
+              agentName={agent.name}
+              editing={planEdit?.taskId === task.id ? planEdit.text : null}
+              onEdit={text => setPlanEdit({ taskId: task.id, text })}
+              onApprove={plan => { onApprovePlan(task.id, plan); setPlanEdit(null); }}
+              onDiscard={() => setPlanEdit(null)}
+            />
           )}
 
           {task.status === 'WAITING_FOR_INPUT' && task.question && (
@@ -543,52 +515,17 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
           )}
 
           {composing && (
-            <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}>
-              <input
-                autoFocus
-                type="text"
-                aria-label={COMPOSER_TEXT[composing].placeholder}
-                placeholder={COMPOSER_TEXT[composing].placeholder}
-                value={composerText}
-                onChange={e => setComposerText(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') submitComposer();
-                  if (e.key === 'Escape') setComposer(null);
-                }}
-                style={{ flex: 1, minWidth: 0, fontSize: 11, padding: '4px 8px', border: '1px solid #cbd5e1', borderRadius: 4 }}
-              />
-              {composing === 'continue' && (
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, color: '#475569', whiteSpace: 'nowrap' }} title="Have the employee propose a plan for approval before working">
-                  <input type="checkbox" checked={continuePlan ?? planFirst} onChange={e => setContinuePlan(e.target.checked)} />
-                  Plan first
-                </label>
-              )}
-              {composing === 'continue' && (
-                <input
-                  type="number"
-                  min="0.01"
-                  max={OFFICE_CONFIG.MAX_TASK_BUDGET_USD}
-                  step="0.01"
-                  aria-label="Budget in US dollars"
-                  title={`Spending limit in US dollars. Leave empty for ${formatBudget(OFFICE_CONFIG.DEFAULT_TASK_BUDGET_USD)}.`}
-                  placeholder={`$ ${OFFICE_CONFIG.DEFAULT_TASK_BUDGET_USD.toFixed(2)}`}
-                  value={composerBudget}
-                  onChange={e => setComposerBudget(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') submitComposer();
-                    if (e.key === 'Escape') setComposer(null);
-                  }}
-                  style={{ width: 64, fontSize: 11, padding: '4px 6px', border: '1px solid #cbd5e1', borderRadius: 4 }}
-                />
-              )}
-              <button className={`${styles.cancelBtn} ${styles.approveBtn}`} onClick={submitComposer}>
-                <Send size={11} />
-                {COMPOSER_TEXT[composing].send}
-              </button>
-              <button className={styles.cancelBtn} onClick={() => setComposer(null)} aria-label="Close">
-                <X size={11} />
-              </button>
-            </div>
+            <TaskComposer
+              mode={composing}
+              text={composerText}
+              onText={setComposerText}
+              budget={composerBudget}
+              onBudget={setComposerBudget}
+              plan={continuePlan ?? planFirst}
+              onPlan={setContinuePlan}
+              onSubmit={submitComposer}
+              onClose={() => setComposer(null)}
+            />
           )}
 
           {task.status === 'AWAITING_APPROVAL' && task.reviewNote && (
@@ -602,80 +539,7 @@ export default function TaskTree({ agents, projectsDir, live, notify, onAnswer, 
             </div>
           )}
 
-          {detailsOpen && (
-            <div className={styles.details}>
-              <div className={styles.detailPrompt}>{cleanPrompt(task.prompt)}</div>
-              {task.response && <div className={styles.detailResponse}>{fullTexts[task.id]?.response ?? task.response}</div>}
-              {task.error && <div className={styles.detailError}>{task.error}</div>}
-              {task.attachments && task.attachments.length > 0 && (
-                <div className={styles.detailFiles}>
-                  <strong>Attached by you:</strong>
-                  <ul>
-                    {task.attachments.slice(0, 20).map(f => <li key={f}>{f}</li>)}
-                    {task.attachments.length > 20 && <li>…and {task.attachments.length - 20} more</li>}
-                  </ul>
-                </div>
-              )}
-              {task.checkOutput && (
-                <div className={task.checkPassed === false ? styles.detailError : styles.detailResponse}>
-                  <strong>Checks{task.checkPassed === false ? ' (failed)' : task.checkPassed ? ' (passed)' : ''}</strong>
-                  {'\n\n'}
-                  {task.checkOutput}
-                </div>
-              )}
-              {task.plan && task.status !== 'PLAN_REVIEW' && (
-                <div className={styles.detailSummary}>
-                  <strong>{task.planApproved ? 'Plan you approved:' : 'Plan:'}</strong>
-                  <p>{task.plan}</p>
-                </div>
-              )}
-              {task.clarifications && (
-                <div className={styles.detailSummary}>
-                  <strong>Questions and your answers:</strong>
-                  <p style={{ whiteSpace: 'pre-wrap' }}>{task.clarifications.trim()}</p>
-                </div>
-              )}
-              {task.feedback && (
-                <div className={styles.detailSummary}>
-                  <strong>{task.reviewStatus === 'CHANGES_REQUESTED' ? 'Changes requested:' : 'Redone after your feedback:'}</strong>
-                  <p>{task.feedback}</p>
-                </div>
-              )}
-              {task.status !== 'AWAITING_APPROVAL' && task.reviewNote && (
-                <div className={styles.detailError}>{task.reviewNote}</div>
-              )}
-              {task.summary && (
-                <div className={styles.detailSummary}>
-                  <strong>Admin Summary:</strong>
-                  <p>{task.summary}</p>
-                </div>
-              )}
-              {task.files && task.files.length > 0 && (
-                <div className={styles.detailFiles}>
-                  <strong>Files written:</strong>
-                  <ul>
-                    {task.files.map(f => <li key={f}>{f}</li>)}
-                  </ul>
-                </div>
-              )}
-              {usage && (
-                <div className={styles.detailTokens}>
-                  <strong>Usage:</strong> {usage}{task.model ? ` · ${task.model}` : ''}
-                  {task.cachedTokens ? ` · ${Math.round((task.cachedTokens / (task.tokens || 1)) * 100)}% of the tokens read from cache` : ''}
-                  {task.durationMs ? ` · ${formatDuration(task.durationMs)}` : ''}
-                </div>
-              )}
-              {task.hasReport && fullTexts[task.id]?.report && (
-                <div className={styles.detailResponse}>
-                  <strong>Report</strong>
-                  {'\n\n'}
-                  {fullTexts[task.id].report}
-                </div>
-              )}
-              {task.project && <div className={styles.detailTime}>Project folder: {projectsDir}/{task.project}</div>}
-              <div className={styles.detailTime}>{new Date(task.timestamp).toLocaleString()}</div>
-            </div>
-          )}
+          {detailsOpen && <TaskDetails task={task} usage={usage} fullText={fullTexts[task.id]} projectsDir={projectsDir} />}
         </div>
 
         {hasChildren && !isCollapsed && (
