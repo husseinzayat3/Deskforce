@@ -15,6 +15,10 @@ node_modules/
 /.next/
 /.next-desktop/
 
+# docs site (VitePress)
+/docs/.vitepress/dist/
+/docs/.vitepress/cache/
+
 # desktop app
 /dist-desktop/
 /build-desktop/

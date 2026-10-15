@@ -39,6 +39,18 @@ The office keeps its database and the generated projects in `workspace/`, which 
 | `electron/`, `scripts/` | The desktop app and its build. |
 | `tests/` | Unit tests. |
 
+## Documentation
+
+The docs in `docs/` are published as a website with [VitePress](https://vitepress.dev). They have their own packages, so the app does not install them. To see your changes as they will look:
+
+```bash
+cd docs
+npm install
+npm run dev      # http://localhost:5173/Deskforce/
+```
+
+A new page also needs an entry in the sidebar in `docs/.vitepress/config.mts`. The build fails on a link to a page that does not exist.
+
 ## Before you open a pull request
 
 ```bash

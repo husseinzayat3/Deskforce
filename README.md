@@ -14,7 +14,7 @@
 
 ![Deskforce demo: the CEO plans a bakery website, the team builds it, and the result opens in a preview](docs/demo.gif)
 
-<sub>A real run: five agents on gpt-4o built this bakery landing page in about a minute, for $0.11.</sub>
+<sub>A real run: four employees on gpt-4o built this bakery landing page in about a minute, for $0.11.</sub>
 
 </div>
 
@@ -40,7 +40,7 @@ npm install && cp .env.example .env.local   # add a key, or use Ollama for free
 npm run dev                                  # open http://localhost:3000
 ```
 
-No key yet? Providers without one answer with mock text, so you can explore the interface first. Full setup: [Getting started](docs/getting-started.md).
+No key yet? Providers without one answer with mock text, so you can explore the interface first. Full setup: [Getting started](https://husseinzayat3.github.io/Deskforce/getting-started).
 
 ## Why Deskforce
 
@@ -98,7 +98,7 @@ Frameworks are the right choice when you are building agents into your own produ
 
 ## Documentation
 
-- **Docs:** [docs/](docs/README.md) — getting started, features, Slack, desktop app, Docker
+- **Docs:** [husseinzayat3.github.io/Deskforce](https://husseinzayat3.github.io/Deskforce/) — getting started, concepts, providers, costs, Slack, FAQ and troubleshooting (also readable in [docs/](docs/README.md))
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) — setup, tests, and what a pull request needs
 - **Security:** [the security model](docs/security.md) · report a vulnerability via [SECURITY.md](SECURITY.md)
 - **License:** [MIT](LICENSE) © 2026 Hussein Zayat — free to use, change and redistribute, including commercially. The default floorplan and avatars in `public/` were generated with Google Gemini and are distributed under the same terms.

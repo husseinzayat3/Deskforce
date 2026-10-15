@@ -140,7 +140,7 @@ export default function SettingsPanel({ onClose, onSaved, onImport }: { onClose:
                 <h4 style={{ margin: '8px 0 0', fontSize: 13 }}>Slack</h4>
                 <span style={hintStyle}>
                   Talk to the office from Slack: message the app, and your most senior employee answers, starts tasks, and tells you when a plan, a question or a report is waiting.
-                  The Slack guide in the docs (docs/slack.md) has the five-minute setup. Status: <strong style={{ color: slack?.status === 'connected' ? '#006300' : slack?.status === 'error' ? '#b91c1c' : '#64748b' }}>{slack?.detail || 'Not set up'}</strong>
+                  The Slack guide at husseinzayat3.github.io/Deskforce/slack has the five-minute setup. Status: <strong style={{ color: slack?.status === 'connected' ? '#006300' : slack?.status === 'error' ? '#b91c1c' : '#64748b' }}>{slack?.detail || 'Not set up'}</strong>
                 </span>
               </>
             )}

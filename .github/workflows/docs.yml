@@ -1,0 +1,59 @@
+name: Docs
+
+# Builds the documentation site from docs/ with VitePress and publishes it on GitHub Pages.
+# One-time setup: Settings → Pages → Source: "GitHub Actions".
+# With a custom domain, set the repository variable DOCS_BASE to "/" (Settings → Secrets and
+# variables → Actions → Variables) and add the domain under Settings → Pages.
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**', '.github/workflows/docs.yml']
+  pull_request:
+    paths: ['docs/**', '.github/workflows/docs.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: npm ci
+      # Fails on a link to a page that does not exist
+      - run: npm run build
+        env:
+          DOCS_BASE: ${{ vars.DOCS_BASE || '/Deskforce/' }}
+      - uses: actions/upload-pages-artifact@v5
+        if: github.event_name != 'pull_request'
+        with:
+          path: docs/.vitepress/dist
+
+  # Pull requests only check that the site builds; main publishes it
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

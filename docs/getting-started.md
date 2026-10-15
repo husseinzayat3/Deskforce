@@ -45,7 +45,7 @@ Copy the example environment file and add the keys for the providers you plan to
 cp .env.example .env.local
 ```
 
-`.env.local` is ignored by git. A provider without a key returns mock responses, so you can explore the interface before adding one. Every setting is described in [`.env.example`](../.env.example).
+`.env.local` is ignored by git. A provider without a key returns mock responses, so you can explore the interface before adding one. Every setting is described in [`.env.example`](https://github.com/husseinzayat3/Deskforce/blob/main/.env.example).
 
 You can also enter keys, models and the Ollama address in the app itself: the gear button opens the settings. Values saved there are kept in the office database and take precedence over `.env.local`.
 

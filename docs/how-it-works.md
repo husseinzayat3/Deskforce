@@ -29,4 +29,4 @@ The guardrail limits, the per-model prices and the discounts for cached input us
 | AI | OpenAI SDK (OpenAI and Grok), Anthropic SDK, Gemini and Ollama HTTP APIs, all streamed, with native tool calling |
 | History | `isomorphic-git` (no `git` program needed) |
 
-Where each part lives in the code is described in [CONTRIBUTING.md](../CONTRIBUTING.md#where-things-are).
+Where each part lives in the code is described in [CONTRIBUTING.md](https://github.com/husseinzayat3/Deskforce/blob/main/CONTRIBUTING.md#where-things-are).

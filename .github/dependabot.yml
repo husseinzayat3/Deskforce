@@ -17,6 +17,13 @@ updates:
     directory: /electron
     schedule:
       interval: weekly
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: monthly
+    groups:
+      docs:
+        patterns: ['*']
   - package-ecosystem: github-actions
     directory: /
     schedule:

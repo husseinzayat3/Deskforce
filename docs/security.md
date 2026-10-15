@@ -13,4 +13,4 @@ The office has no login, so it is built to be used from the computer it runs on:
 
 Do not expose it to the internet without adding authentication first.
 
-To report a vulnerability, see [SECURITY.md](../SECURITY.md).
+To report a vulnerability, see [SECURITY.md](https://github.com/husseinzayat3/Deskforce/blob/main/SECURITY.md).
