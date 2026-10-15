@@ -58,12 +58,13 @@ A new page also needs an entry in the sidebar in `docs/.vitepress/config.mts`. T
 ```bash
 npm run lint
 npm run typecheck
-npm test
+npm test              # unit, provider and engine tests (about half a minute)
+npm run test:e2e      # the office in a real browser; run `npx playwright install chromium` once first
 ```
 
-All three run on every pull request and must pass.
+All of these run on every pull request and must pass. `npm run test:coverage` shows how much of `src/lib` the tests cover.
 
-- **Add a test** for new logic in `src/lib/`. Tests use Node's built-in runner; copy the style of the files in `tests/`.
+- **Add a test** for new logic in `src/lib/`. Tests use Node's built-in runner; copy the style of the files in `tests/`. To test something a model does, script its answers with the fake provider in `tests/helpers/fakeProvider.ts`, as `tests/engine.test.ts` does: no key or network is needed.
 - **Changes to the security code** (`guard.ts`, `netGuard.ts`, path handling in `workspace.ts`, the sandbox in `checks.ts`, `electron/main.js`) need a test that shows what is refused, and a sentence in the pull request on why the change is safe.
 - **Match the code around you:** small functions, a comment that says why rather than what, and messages a non-programmer can understand, since they are shown to the user.
 - **Update the docs** (the README, or the page in `docs/` it belongs to) when you add a setting, a command or a behaviour someone using the office would notice.
