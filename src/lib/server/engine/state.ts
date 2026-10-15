@@ -1,4 +1,3 @@
-import { Agent } from '../../types';
 import * as store from '../store';
 import { endLive, startLive } from '../live';
 
