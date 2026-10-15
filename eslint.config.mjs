@@ -9,6 +9,13 @@ const config = [
       '@next/next/no-img-element': 'off',
     },
   },
+  {
+    // The app is fully typed; tests may stay loose where they fake a provider's wire format
+    files: ['src/**/*.{ts,tsx}'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
 ];
 
 export default config;

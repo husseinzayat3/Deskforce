@@ -12,6 +12,7 @@ import { Agent, APIProvider, Attachment, OfficeFile } from '../../../lib/types';
 import { FINISHED_STATUSES, OFFICE_CONFIG, getRoot, getTree, indexTasks, startOfMonth } from '../../../lib/officeConfig';
 import { ATTACHMENT_LIMITS, deleteProject, discardAttachments, projectExists, safeProject, stageAttachments } from '../../../lib/server/workspace';
 import { PROJECTS_DIR } from '../../../lib/server/paths';
+import { errorMessage } from '../../../lib/errors';
 
 export const dynamic = 'force-dynamic';
 
@@ -178,9 +179,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ events: afterEvent === null ? [] : store.listEvents(Number(afterEvent) || 0), lastEventId: store.latestEventId() });
     }
     return NextResponse.json(snapshot(params.get('version'), afterEvent === null ? null : Number(afterEvent) || 0));
-  } catch (error: any) {
+  } catch (error) {
     console.error('Office GET error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }
 
@@ -288,8 +289,8 @@ export async function POST(req: NextRequest) {
         let counts;
         try {
           counts = importOffice(body.office);
-        } catch (e: any) {
-          return badRequest(e.message);
+        } catch (e) {
+          return badRequest(errorMessage(e));
         }
         store.pushEvent(`Imported ${counts.roles} role${counts.roles === 1 ? '' : 's'}, ${counts.employees} employee${counts.employees === 1 ? '' : 's'} and ${counts.templates} template${counts.templates === 1 ? '' : 's'}.`);
         break;
@@ -334,10 +335,10 @@ export async function POST(req: NextRequest) {
           try {
             const paths = stageAttachments(taskId, attachments, Boolean(body.attachedFolder));
             store.updateTask(taskId, { attachments: paths, status: 'PENDING' });
-          } catch (e: any) {
+          } catch (e) {
             discardAttachments(taskId);
             store.deleteTasks([taskId], startOfMonth(Date.now()));
-            return badRequest(e.message);
+            return badRequest(errorMessage(e));
           }
         }
         break;
@@ -489,8 +490,8 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json(snapshot(null, null));
-  } catch (error: any) {
+  } catch (error) {
     console.error('Office POST error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }

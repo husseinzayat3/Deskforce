@@ -19,6 +19,7 @@ import ProjectBrowser from './ProjectBrowser';
 import { readAttachments } from '../lib/attachments';
 import { OFFICE_CONFIG, MODEL_SUGGESTIONS, cleanPrompt, formatUsage, projectOf, taskTitle } from '../lib/officeConfig';
 import { TemplateDraft } from '../lib/SimulationContext';
+import { errorMessage } from '../lib/errors';
 
 /** How an employee's state reads in the team list. */
 const STATE_LABEL: Record<string, string> = {
@@ -63,8 +64,8 @@ export default function Dashboard() {
       const files = await readAttachments(picked);
       if (files.length === 0) return notify('Nothing to attach: the folder only holds files that are skipped (such as node_modules).');
       setAttached({ files, folder });
-    } catch (e: any) {
-      notify(e.message);
+    } catch (e) {
+      notify(errorMessage(e));
     }
   };
   // A template being created from a task on the board

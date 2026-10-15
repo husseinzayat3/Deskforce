@@ -5,6 +5,7 @@ import * as actions from './actions';
 import { AgentTool, runAgent } from './agent';
 import { ToolsUnsupportedError, Turn, hasRealModel } from './llm';
 import { getSetting } from './settings';
+import { errorMessage } from '../errors';
 
 /**
  * Talking to the office in words: the most senior employee answers, and runs the office
@@ -265,8 +266,8 @@ export const chatWithOffice = (conversation: string, message: string, signal?: A
         store.addOtherSpend(startOfMonth(Date.now()), run.cost || 0);
         reply = run.finalText || run.problems[0] || 'Done.';
       }
-    } catch (e: any) {
-      reply = e instanceof ToolsUnsupportedError ? answerWithoutTools(agents, said) : `Something went wrong: ${e?.message || 'unknown error'}`;
+    } catch (e) {
+      reply = e instanceof ToolsUnsupportedError ? answerWithoutTools(agents, said) : `Something went wrong: ${errorMessage(e) || 'unknown error'}`;
     }
 
     store.addChatTurn(conversation, 'assistant', reply);

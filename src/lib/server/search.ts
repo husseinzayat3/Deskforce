@@ -47,15 +47,15 @@ const searchTasks = (query: string): TaskHit[] => {
     WHERE prompt LIKE @like ESCAPE '\\' OR title LIKE @like ESCAPE '\\' OR answer LIKE @like ESCAPE '\\' OR summary LIKE @like ESCAPE '\\' OR plan LIKE @like ESCAPE '\\'
     ORDER BY createdAt DESC
     LIMIT ${MAX_TASK_HITS}
-  `).all({ like }) as any[];
+  `).all({ like }) as { id: string; prompt: string; title: string | null; answer: string | null; summary: string | null; plan: string | null; status: string; project: string | null; parentId: string | null; kind: string | null }[];
 
   const has = (text: string | null) => Boolean(text && text.toLowerCase().includes(query.toLowerCase()));
   return rows.map(row => {
     const request = String(row.prompt || '').replace(/^Task delegated from [^:]+:\s*/i, '');
     const [where, text]: [TaskHit['where'], string] =
-      has(row.title) || has(request) ? ['request', has(request) ? request : row.title]
-        : has(row.summary) ? ['summary', row.summary]
-          : has(row.plan) ? ['plan', row.plan]
+      has(row.title) || has(request) ? ['request', has(request) ? request : row.title || '']
+        : has(row.summary) ? ['summary', row.summary || '']
+          : has(row.plan) ? ['plan', row.plan || '']
             : ['response', row.answer || ''];
     return {
       taskId: row.id,

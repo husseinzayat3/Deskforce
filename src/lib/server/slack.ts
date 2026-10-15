@@ -2,6 +2,7 @@ import WebSocket from 'ws';
 import * as store from './store';
 import { getSetting } from './settings';
 import { chatWithOffice } from './chat';
+import { errorMessage } from '../errors';
 
 /**
  * Slack as a way to talk to the office. Uses Slack's Socket Mode: the office opens the
@@ -34,13 +35,45 @@ const slack: SlackState = (globalForSlack.__officeSlack ??= { status: 'off', det
 
 export const slackStatus = () => ({ status: slack.status, detail: slack.detail });
 
-const call = async (method: string, token: string, body?: Record<string, unknown>) => {
+/** The parts of Slack's answers the office reads. */
+interface SlackAnswer {
+  ok?: boolean;
+  error?: string;
+  /** auth.test */
+  user_id?: string;
+  user?: string;
+  team?: string;
+  /** apps.connections.open */
+  url?: string;
+}
+
+/** A message event: a direct message or a mention of the app. */
+interface SlackEvent {
+  type?: string;
+  user?: string;
+  channel?: string;
+  channel_type?: string;
+  text?: string;
+  ts?: string;
+  thread_ts?: string;
+  subtype?: string;
+  bot_id?: string;
+}
+
+/** What arrives over the Socket Mode connection. */
+interface SlackEnvelope {
+  type?: string;
+  envelope_id?: string;
+  payload?: { event_id?: string; event?: SlackEvent };
+}
+
+const call = async (method: string, token: string, body?: Record<string, unknown>): Promise<SlackAnswer> => {
   const res = await fetch(`${API}/${method}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' },
     body: JSON.stringify(body || {}),
   });
-  const data: any = await res.json().catch(() => ({}));
+  const data: SlackAnswer = await res.json().catch(() => ({}));
   if (!data.ok) throw new Error(`Slack refused ${method}: ${data.error || res.status}`);
   return data;
 };
@@ -58,7 +91,7 @@ export const slackHome = () => (slack.status === 'connected' ? store.getMeta('sl
 
 const allowedUsers = () => new Set(getSetting('slackUsers').split(/[\s,]+/).map(u => u.trim()).filter(Boolean));
 
-const handleMessage = async (event: any) => {
+const handleMessage = async (event: SlackEvent) => {
   const user: string = event.user || '';
   const channel: string = event.channel || '';
   if (!user || !channel) return;
@@ -86,6 +119,7 @@ const connect = async (appToken: string, tokens: string) => {
     const identity = await call('auth.test', getSetting('slackBotToken'));
     slack.botUser = identity.user_id;
     const { url } = await call('apps.connections.open', appToken);
+    if (!url) throw new Error('Slack did not say where to connect. Check the app-level token.');
     const socket = new WebSocket(url);
     slack.socket = socket;
 
@@ -97,7 +131,7 @@ const connect = async (appToken: string, tokens: string) => {
     });
 
     socket.on('message', raw => {
-      let envelope: any;
+      let envelope: SlackEnvelope;
       try {
         envelope = JSON.parse(raw.toString());
       } catch {
@@ -109,9 +143,12 @@ const connect = async (appToken: string, tokens: string) => {
       if (envelope.envelope_id) socket.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
       if (envelope.type !== 'events_api') return;
 
-      const id: string = envelope.payload?.event_id || envelope.envelope_id;
-      if (slack.seen.includes(id)) return;
-      slack.seen = [...slack.seen.slice(-200), id];
+      // An event Slack sends twice is handled once
+      const id = envelope.payload?.event_id || envelope.envelope_id;
+      if (id) {
+        if (slack.seen.includes(id)) return;
+        slack.seen = [...slack.seen.slice(-200), id];
+      }
 
       const event = envelope.payload?.event;
       const direct = event?.type === 'message' && event.channel_type === 'im' && !event.subtype && !event.bot_id;
@@ -128,10 +165,10 @@ const connect = async (appToken: string, tokens: string) => {
     };
     socket.on('close', () => lost('connection closed'));
     socket.on('error', e => lost(e.message));
-  } catch (e: any) {
+  } catch (e) {
     slack.socket = undefined;
     slack.status = 'error';
-    slack.detail = e.message;
+    slack.detail = errorMessage(e);
     slack.retryAt = Date.now() + RECONNECT_MS * 6;
   }
 };

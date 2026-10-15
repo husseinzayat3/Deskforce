@@ -5,6 +5,7 @@ import { Plus, X } from 'lucide-react';
 import { useSimulation } from '../lib/SimulationContext';
 import { BUILT_IN_AVATARS } from '../lib/layout';
 import { uploadPicture } from '../lib/upload';
+import { errorMessage } from '../lib/errors';
 
 const SIZE = 40;
 
@@ -23,8 +24,8 @@ export default function AvatarPicker({ value, onChange }: { value: string; onCha
       const url = await uploadPicture('avatar', file);
       saveLayout({ ...layout, avatars: [...layout.avatars, url] });
       onChange(url);
-    } catch (e: any) {
-      notify(e.message);
+    } catch (e) {
+      notify(errorMessage(e));
     } finally {
       setBusy(false);
     }

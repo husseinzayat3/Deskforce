@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { describeSettings, isSettingName, saveSetting } from '../../../lib/server/settings';
 import { refuseForeignRequest, refuseUnknownHost } from '../../../lib/server/guard';
 import { slackStatus } from '../../../lib/server/slack';
+import { errorMessage } from '../../../lib/errors';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,8 +15,8 @@ export async function GET(req: NextRequest) {
 
   try {
     return NextResponse.json({ ...describeSettings(), slack: slackStatus() });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }
 
@@ -45,7 +46,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ ...describeSettings(), slack: slackStatus() });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }

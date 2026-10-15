@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Download, ExternalLink, FileText, History, ListChecks, Play, RotateCcw, X } from 'lucide-react';
 import styles from './Dashboard.module.css';
+import { errorMessage } from '../lib/errors';
 
 interface Commit {
   id: string;
@@ -92,8 +93,8 @@ export default function ProjectBrowser({ project, commitId, initialFile, onClose
     setBusy(true);
     try {
       await work();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -125,8 +126,8 @@ export default function ProjectBrowser({ project, commitId, initialFile, onClose
           const changes = await getJson(`${base}&commit=${target.id}`);
           if (!closed) setView({ kind: 'commit', commit: target, files: changes.files });
         }
-      } catch (e: any) {
-        if (!closed) setError(e.message);
+      } catch (e) {
+        if (!closed) setError(errorMessage(e));
       }
     })();
     return () => {

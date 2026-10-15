@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Bell, Download, Upload, X } from 'lucide-react';
 import { OfficeFile } from '../lib/types';
 import styles from './Dashboard.module.css';
+import { errorMessage } from '../lib/errors';
 
 type Source = 'app' | 'environment' | 'default';
 interface SecretInfo { set: boolean; hint: string; source: Source }
@@ -93,8 +94,8 @@ export default function SettingsPanel({ onClose, onSaved, onImport }: { onClose:
       if (!res.ok || data.error) throw new Error(data.error || 'The settings could not be saved.');
       show(data);
       onSaved('Settings saved');
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(errorMessage(e));
     } finally {
       setSaving(false);
     }

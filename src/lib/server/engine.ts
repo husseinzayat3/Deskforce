@@ -15,6 +15,7 @@ import { appendLive, endLive, startLive } from './live';
 import { nextRunTime } from '../schedule';
 import { ensureSlack, postToSlack, slackHome } from './slack';
 import { parseFileBlocks } from '../fileBlocks';
+import { errorMessage } from '../errors';
 
 /**
  * The office engine: runs queued tasks on the server, so work carries on when no browser is open.
@@ -231,10 +232,10 @@ const holdMeeting = async (host: Agent, task: TaskItem, agents: Agent[], overBud
       cost,
       model: Array.from(models).join(' / '),
     });
-  } catch (e: any) {
+  } catch (e) {
     if (!wasCancelled()) {
       // The tasks waiting on the meeting still run, one after the other
-      store.updateTask(task.id, { status: 'FAILED', error: e?.message || 'Unknown error' });
+      store.updateTask(task.id, { status: 'FAILED', error: errorMessage(e) || 'Unknown error' });
     }
   } finally {
     finish(task.id, host.id);
@@ -757,9 +758,9 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       for (const block of blocks.files) {
         try {
           await saveFile(block.path, block.content);
-        } catch (e: any) {
+        } catch (e) {
           // An echoed format example is not a problem worth reporting
-          if (!/placeholder/.test(e.message)) problems.push(`${block.path}: ${e.message}`);
+          if (!/placeholder/.test(errorMessage(e))) problems.push(`${block.path}: ${errorMessage(e)}`);
         }
       }
 
@@ -799,8 +800,8 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
     if (changed && slug) {
       try {
         commit = await commitProject(slug, `${commitTitle(task)}\n\nTask ${task.id}, by ${agent.name} (${agent.role})`, authorFor(agent.name));
-      } catch (e: any) {
-        problems.push(`History: the files were saved but could not be committed (${e.message}).`);
+      } catch (e) {
+        problems.push(`History: the files were saved but could not be committed (${errorMessage(e)}).`);
       }
     }
 
@@ -907,10 +908,10 @@ const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[], roles:
       reviewStatus: undefined,
       reviewNote: problems.length > 0 ? problems.join('\n') : undefined
     });
-  } catch (e: any) {
+  } catch (e) {
     if (wasCancelled()) return;
 
-    const message: string = e?.message || 'Unknown error';
+    const message: string = errorMessage(e) || 'Unknown error';
     const isRateLimit = message.toLowerCase().includes('429') || message.toLowerCase().includes('rate limit');
     store.updateTask(task.id, { status: 'FAILED', error: message });
     store.pushEvent(`Task for ${agent.name} failed.${isRateLimit ? ' (Rate limit hit — pausing this employee for a minute)' : ''}`, 'failed');
@@ -1021,8 +1022,8 @@ const wrapUp = (agents: Agent[]) => {
         writeProjectFile(root.project, transcriptFilename(sequence), buildTranscript(rootRef, tree));
         void commitProject(root.project, `Add the report for: ${commitTitle(root)}`).catch(() => undefined);
         store.pushEvent(`Report ready: ${root.project}`, 'report');
-      } catch (e: any) {
-        store.pushEvent(`Could not save the report files for ${root.project}: ${e.message}`);
+      } catch (e) {
+        store.pushEvent(`Could not save the report files for ${root.project}: ${errorMessage(e)}`);
       }
     }
   }
