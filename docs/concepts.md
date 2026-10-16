@@ -68,9 +68,11 @@ When the work a manager delegated comes back, the manager gets a **follow-up rou
 
 ## Final review and report
 
-When every task in the tree is finished and more than one person worked on the project, the employee who owns the request does a **final review** of the whole project: do the pieces fit together, is anything missing? They fix what they find. Then the office writes a **report** for you: what was asked, who did what, the files delivered, tokens and cost.
+When every task in the tree is finished and more than one person worked on the project, the employee who owns the request does a **final review** of the whole project. They list everything the request and the plan asked for, check each item against the files, check that the files work together, and fix what they find. Their summary marks each item ✓ or ✗. Then the office writes a **report** for you: what was asked, who did what, the files delivered, tokens and cost.
 
-If [checks](checks.md) are turned on, the project's syntax and tests are checked before the report, and failures get one round of fixing.
+**An automatic check helps the review.** Before the manager's follow-up round and before the final review, the office reads the files and looks for places where they do not fit together: a page that links a file that is not there, pages that ignore the project's stylesheet or that no page links to, imports of missing files or functions, a Python script whose entry point comes before the functions it calls. Whatever it finds is given to the reviewer to fix, and anything still there at the end is listed in the report. When an employee replaces a whole file and functions it had disappear, they are told which ones.
+
+If [checks](checks.md) are turned on, the project's syntax and tests are checked before the report, and failures get one round of fixing. Work you send back with **Request changes** gets a round of its own.
 
 ## Projects and history
 

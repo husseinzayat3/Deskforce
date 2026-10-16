@@ -42,9 +42,9 @@ The server owns everything. The browser never calls a model or writes a file: it
 **The engine** (`src/lib/server/engine/`). Started when the server starts (`src/instrumentation.ts`), it ticks every second:
 
 1. `index.ts` — the tick: re-queue work a restart interrupted, respect the pause and the monthly cap, start the oldest pending task of every idle employee, then look for follow-ups and wrap-ups. A tick that finds nothing changed returns at once.
-2. `runTask.ts` — one task: build the prompt (`src/lib/agentPrompt.ts`), let the model work, save the result. Models that call tools run in a loop (`src/lib/server/agent.ts`): each tool call is carried out and its result sent back, until the model replies with a summary. Models that cannot call tools write everything in one answer marked up with tags (`src/lib/fileBlocks.ts`). Delegations are checked against the rules (rank, depth, number, duplicates, budget) before they are queued.
+2. `runTask.ts` — one task: build the prompt (`src/lib/agentPrompt.ts`), let the model work, save the result. Models that call tools run in a loop (`src/lib/server/agent.ts`): each tool call is carried out and its result sent back, until the model replies with a summary. Models that cannot call tools write everything in one answer marked up with tags (`src/lib/fileBlocks.ts`). Delegations are checked against the rules (rank, depth, number, duplicates, budget) before they are queued. When `write_file` replaces a file and functions it defined disappear, the tool's answer says so (`src/lib/consistency.ts`).
 3. `meeting.ts` — two employees given the same files agree on a split first.
-4. `wrapUp.ts` — once a team's work is in: the manager's follow-up round, the final review, the optional checks, and the report.
+4. `wrapUp.ts` — once a team's work is in: the manager's follow-up round, the final review, the optional checks, and the report. `src/lib/consistency.ts` reads the files for places where they do not fit together (missing links and imports, unused stylesheets, unreachable pages); the follow-up and the review are given what it finds, and the report lists what is left.
 5. `schedules.ts` — scheduled templates and the monthly cap.
 6. `state.ts` — what lives in memory: the tasks in flight and how to stop them.
 

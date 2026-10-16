@@ -236,6 +236,97 @@ test('a model without tool calling works through tags in its text', async () => 
   assert.equal(fs.readFileSync(projectFile('tag-notes', 'notes.md'), 'utf-8').trim(), 'Remember the milk.');
 });
 
+test('the review is told where the files do not fit together, and the report keeps what is still wrong', async () => {
+  const una = hire('Una', 'CEO');
+  const ivo = hire('Ivo', 'Junior Dev');
+  scripts.set('Una', request => {
+    // The follow-up and the review change nothing, so the problem is still there for the report
+    if (/Final review|Your team has finished/.test(request.allText)) return { text: 'Looks complete.' };
+    return request.toolRounds === 0
+      ? { toolCalls: [
+        { name: 'name_project', input: { name: 'studio-site' } },
+        { name: 'write_file', input: { path: 'styles/main.css', content: 'body { color: teal; }' } },
+        { name: 'delegate', input: { employee_id: ivo, title: 'Write the pages', description: 'Create index.html and pricing.html.' } },
+      ] }
+      : { text: 'Styles done, pages delegated.' };
+  });
+  scripts.set('Ivo', request => request.toolRounds === 0
+    ? { toolCalls: [
+      { name: 'write_file', input: { path: 'index.html', content: '<html><body><h1>Studio</h1></body></html>' } },
+      { name: 'write_file', input: { path: 'pricing.html', content: '<html><body><h1>Prices</h1></body></html>' } },
+    ] }
+    : { text: 'Pages written.' });
+
+  const id = store.createTask(una, 'Build a two-page studio site', 'User');
+  const done = await waitFor('the report', () => (task(id).report ? task(id) : undefined));
+
+  const review = fake.requests.find(r => speaker(r) === 'Una' && /This is the final review/.test(r.system));
+  assert.ok(review, 'the review ran');
+  assert.match(review.system, /List everything the client's request and the approved plan ask for/);
+  assert.match(review.system, /marked ✓ \(delivered\) or ✗ \(still missing\)/);
+  assert.match(review.system, /index\.html does not use any stylesheet, although the project has styles\/main\.css\./);
+  assert.match(review.system, /No page links to pricing\.html/);
+  // The manager's follow-up saw the same problems first
+  assert.ok(fake.requests.some(r => speaker(r) === 'Una' && /Your team has finished/.test(r.allText) && /does not use any stylesheet/.test(r.system)));
+  // Nobody fixed them, so the client is told
+  assert.match(done.report || '', /## Found by the automatic check/);
+  assert.match(done.report || '', /pricing\.html does not use any stylesheet/);
+});
+
+test('replacing a file and losing what it defined is pointed out to the model', async () => {
+  const wes = hire('Wes', 'CEO');
+  scripts.set('Wes', request => {
+    if (request.toolRounds === 0) {
+      return { toolCalls: [
+        { name: 'name_project', input: { name: 'tracker-lib' } },
+        { name: 'write_file', input: { path: 'tracker.py', content: 'def load():\n    pass\n\n\ndef add_expense(x):\n    pass\n' } },
+      ] };
+    }
+    if (request.toolRounds === 2) return { toolCalls: [{ name: 'write_file', input: { path: 'tracker.py', content: 'def main():\n    load()\n' } }] };
+    return { text: 'Rewrote the tracker.' };
+  });
+
+  const id = store.createTask(wes, 'Write a small expense tracker module', 'User');
+  await waitFor('the task', () => task(id).status === 'COMPLETED');
+  const afterRewrite = fake.requests.find(r => speaker(r) === 'Wes' && r.toolRounds === 3);
+  assert.ok(afterRewrite, 'the model was called again after the rewrite');
+  assert.match(afterRewrite.allText, /The previous version defined load, add_expense, which this version no longer has\./);
+});
+
+test('work sent back with "Request changes" gets its own round of checks and fixes', async () => {
+  process.env.OFFICE_ALLOW_CHECKS = 'on';
+  try {
+    const zoe = hire('Zoe', 'CEO');
+    let version = 0;
+    scripts.set('Zoe', request => {
+      // Fixing failed checks: write valid JSON
+      if (/checks failed/.test(request.allText)) {
+        return request.toolRounds === 0 ? { toolCalls: [{ name: 'write_file', input: { path: 'data.json', content: '{"ok": true}' } }] } : { text: 'Fixed the JSON.' };
+      }
+      if (request.toolRounds > 0) return { text: 'Wrote the data.' };
+      version += 1;
+      return { toolCalls: [
+        ...(version === 1 ? [{ name: 'name_project', input: { name: 'json-data' } }] : []),
+        // Every delivery, the first one and the revision, has broken JSON
+        { name: 'write_file', input: { path: 'data.json', content: '{"ok": tru' } },
+      ] };
+    });
+
+    const id = store.createTask(zoe, 'Write data.json', 'User');
+    await waitFor('the first report', () => task(id).report);
+    const fixesOf = () => store.getState().flatMap(a => a.taskQueue).filter(t => t.parentId === id && t.title === 'Fix failing checks');
+    assert.equal(fixesOf().length, 1, 'the first delivery got a fix round');
+    assert.equal(task(id).checkPassed, true);
+
+    assert.equal(actions.reviseTask(id, 'Add a second field.'), null);
+    await waitFor('the second report', () => task(id).status === 'COMPLETED' && task(id).report && task(id).checkRuns === 2);
+    assert.equal(fixesOf().length, 2, 'the revision got a fix round of its own');
+    assert.equal(task(id).checkPassed, true);
+  } finally {
+    process.env.OFFICE_ALLOW_CHECKS = 'off';
+  }
+});
+
 test('the monthly cap stops new work from starting, and raising it lets it run', async () => {
   const cy = hire('Cy', 'CEO');
   scripts.set('Cy', () => ({ text: 'Ran once the cap was raised.' }));
