@@ -15,7 +15,7 @@ Read it as a website: **[husseinzayat3.github.io/Deskforce](https://husseinzayat
 - [Docker](docker.md) — run the published image or build your own
 - [Security model](security.md) — what the office protects against, and what it does not
 - [FAQ](faq.md) and [Troubleshooting](troubleshooting.md)
-- [Custom builds](custom-builds.md) — a version made for your company
+- [Work with me](work-with-me.md) — AI, backend and leadership work by the author · [Custom builds](custom-builds.md) — Deskforce made for your company
 
 To preview the site while editing: `cd docs && npm install && npm run dev`.
 

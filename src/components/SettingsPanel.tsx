@@ -1,10 +1,11 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Bell, Download, Upload, X } from 'lucide-react';
+import { Bell, Download, ExternalLink, Upload, X } from 'lucide-react';
 import { OfficeFile } from '../lib/types';
 import styles from './Dashboard.module.css';
 import { errorMessage } from '../lib/errors';
+import packageInfo from '../../package.json';
 
 type Source = 'app' | 'environment' | 'default';
 interface SecretInfo { set: boolean; hint: string; source: Source }
@@ -36,6 +37,17 @@ const EMPTY_DRAFT = Object.fromEntries(FIELDS.map(f => [f.name, ''])) as Draft;
 
 const labelStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, fontWeight: 600, color: '#334155' };
 const hintStyle: React.CSSProperties = { fontSize: 11, fontWeight: 400, color: '#64748b' };
+
+const DOCS = 'https://husseinzayat3.github.io/Deskforce';
+const REPO = 'https://github.com/husseinzayat3/Deskforce';
+
+/** Where to read more; links open in the browser (in the desktop app, the system one). */
+const ABOUT_LINKS = [
+  { label: 'Documentation', href: `${DOCS}/` },
+  { label: 'What\'s new', href: `${REPO}/releases` },
+  { label: 'Source code', href: REPO },
+  { label: 'Report a problem', href: `${REPO}/issues/new/choose` },
+];
 
 /** Where the AI providers are configured. Keys are sent to the server once and never shown again. */
 export default function SettingsPanel({ onClose, onSaved, onImport }: { onClose: () => void; onSaved: (message: string) => void; onImport: (office: OfficeFile) => void }) {
@@ -229,6 +241,20 @@ export default function SettingsPanel({ onClose, onSaved, onImport }: { onClose:
             </div>
           </>
         )}
+
+        <h4 style={{ margin: '8px 0 0', fontSize: 13 }}>About</h4>
+        <span style={hintStyle}>Deskforce {packageInfo.version} · free and open source under the MIT License</span>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', fontSize: 12 }}>
+          {ABOUT_LINKS.map(link => (
+            <a key={link.href} href={link.href} target="_blank" rel="noopener noreferrer" style={{ color: '#2563eb', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              {link.label} <ExternalLink size={11} />
+            </a>
+          ))}
+        </div>
+        <span style={hintStyle}>
+          Need Deskforce built around your company, or help with AI or backend work?{' '}
+          <a href={`${DOCS}/work-with-me`} target="_blank" rel="noopener noreferrer" style={{ color: '#2563eb' }}>Work with the author</a>
+        </span>
 
         {error && <div role="alert" style={{ fontSize: 12, color: '#dc2626' }}>{error}</div>}
 
