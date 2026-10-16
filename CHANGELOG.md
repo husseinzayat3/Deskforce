@@ -6,7 +6,10 @@ Installers for each release are on the [Releases page](https://github.com/hussei
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-16
+
 ### Added
+- The Mac app is signed and notarised by Apple: it opens without a warning, and installed apps update themselves.
 - Linux installers: an AppImage for any distribution and a .deb for Debian and Ubuntu. The AppImage updates itself.
 - A documentation site at [husseinzayat3.github.io/Deskforce](https://husseinzayat3.github.io/Deskforce/), with new pages on concepts, providers and models, costs and budgets, office files, an FAQ and troubleshooting.
 - A shorter README with a demo, screenshots and a comparison with other agent tools.
@@ -45,6 +48,7 @@ Versions used to set up and fix the release pipeline; no installers were publish
 - First open-source version of Deskforce under the MIT License: the office, roles and delegation, plans, meetings, reviews and reports, git history and undo, costs and budgets, Slack, checks and the desktop app.
 - Contributing guide, security policy, issue and pull request templates, continuous integration and Dependabot.
 
-[Unreleased]: https://github.com/husseinzayat3/Deskforce/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/husseinzayat3/Deskforce/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/husseinzayat3/Deskforce/compare/v0.2.2...v0.4.0
 [0.2.2]: https://github.com/husseinzayat3/Deskforce/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/husseinzayat3/Deskforce/compare/v0.2.0...v0.2.1

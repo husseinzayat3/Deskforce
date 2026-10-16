@@ -28,9 +28,9 @@ Agents can only write inside their task's project folder, cannot reach your priv
 
 Treat it like work from a new colleague: often good, sometimes wrong. Read it, run it, and use **Request changes** for anything that needs fixing before you rely on it.
 
-## Why does my Mac or Windows warn me when I open the app?
+## Why does Windows warn me when I open the installer?
 
-The apps are not yet signed with a paid certificate. See [Getting started](getting-started.md#desktop-app) for how to open them, and [Troubleshooting](troubleshooting.md#macos-says-the-app-is-damaged-or-cannot-be-checked) if macOS refuses.
+The Windows installer is not signed with a paid certificate yet. See [Getting started](getting-started.md#desktop-app) for how to run it. The Mac app is signed and notarised by Apple and opens without a warning; if your Mac still warns, you have a version older than 0.4.0 (see [Troubleshooting](troubleshooting.md#macos-will-not-open-the-app)).
 
 ## Can several people use one office?
 
