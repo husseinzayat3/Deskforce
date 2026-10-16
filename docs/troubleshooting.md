@@ -6,15 +6,9 @@ Can't find your problem here? [Open an issue](https://github.com/husseinzayat3/D
 
 That provider has **no API key**, so it answers with mock text and builds nothing. Add the key in **Settings** (or `.env.local` when running from the source, then restart). The settings screen shows which keys are set.
 
-## macOS says the app is damaged, or cannot be checked
+## macOS will not open the app
 
-The app is not signed with a paid Apple certificate yet. Try to open it once, then go to **System Settings → Privacy & Security**, scroll down, and choose **Open Anyway**.
-
-If macOS says the app **"is damaged and can't be opened"**, it is the download quarantine, not real damage. Move the app to Applications and run once in Terminal:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/Deskforce.app
-```
+The Mac app is signed and notarised by Apple from version 0.4.0, so macOS opens it without asking. If it says the app "cannot be checked" or "is damaged", you are opening an older, unsigned download: get the latest from the [Releases page](https://github.com/husseinzayat3/Deskforce/releases/latest). From 0.4.0 on, the app also updates itself.
 
 ## Windows says "Windows protected your PC"
 
