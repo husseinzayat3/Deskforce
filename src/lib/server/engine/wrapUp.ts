@@ -4,7 +4,8 @@ import { REVIEW_TASK_PROMPT } from '../../agentPrompt';
 import { buildReport, buildTranscript, reportFilename, transcriptFilename } from '../../report';
 import * as store from '../store';
 import { checksAllowed, runChecks } from '../checks';
-import { projectPath, writeProjectFile } from '../workspace';
+import { projectPath, readProjectContents, writeProjectFile } from '../workspace';
+import { findProjectProblems } from '../../consistency';
 import { commitProject } from '../git';
 import { errorMessage } from '../../errors';
 import { engine } from './state';
@@ -79,7 +80,8 @@ export const wrapUp = (agents: Agent[]) => {
         if (engine.verifying.has(root.id)) continue;
         const runs = root.checkRuns || 0;
         const failed = root.checkPassed === false;
-        const fixes = subtasks.filter(ref => ref.task.title === FIX_CHECKS_TITLE);
+        // Only fixes made since the latest work count: work redone after "Request changes" gets its own round
+        const fixes = subtasks.filter(ref => ref.task.title === FIX_CHECKS_TITLE && ref.task.timestamp >= lastWork);
         // Checks stored by an earlier run of this task stay as they are once a fix was tried
         const fixedSince = fixes.some(ref => ref.task.status === 'COMPLETED');
 
@@ -103,7 +105,11 @@ export const wrapUp = (agents: Agent[]) => {
       }
 
       const rootRef = { task: root, agent };
-      const report = buildReport(rootRef, tree, projectPath(root.project));
+      // What still does not fit together after the review, so the client knows what to check
+      const remaining = findProjectProblems(readProjectContents(root.project));
+      const report = buildReport(rootRef, tree, projectPath(root.project)) + (remaining.length > 0
+        ? `\n## Found by the automatic check\n\nThe office read the files and found these problems between them. Send the task back with **Request changes** to have them fixed.\n\n${remaining.map(p => `- ${p}`).join('\n')}\n`
+        : '');
       store.updateTask(root.id, { report });
       try {
         // Follow-up requests on the same project get their own numbered report

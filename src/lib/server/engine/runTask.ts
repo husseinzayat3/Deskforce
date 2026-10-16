@@ -14,6 +14,7 @@ import { appendLive } from '../live';
 import { postToSlack, slackHome } from '../slack';
 import { parseFileBlocks } from '../../fileBlocks';
 import { errorMessage } from '../../errors';
+import { describeLostWork, findProjectProblems } from '../../consistency';
 import { begin, engine, finish, withoutTools } from './state';
 import { claimProjectName, commitTitle, filesMentioned, normalizeFilename, projectHistoryOf } from './projects';
 import { holdMeeting } from './meeting';
@@ -138,6 +139,8 @@ export const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[],
       existingFiles = listProjectFiles(slug);
       fileContents = readProjectContents(slug, existingFiles);
     }
+    // Whoever checks the team's work is told where the files do not fit together
+    const projectProblems = (isReview || isFollowUp) && slug ? findProjectProblems(fileContents) : [];
 
     // Only offer colleagues this agent is actually allowed to delegate to
     // A comparison is one model working alone, so the result says something about that model
@@ -164,7 +167,7 @@ export const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[],
     const canAskManager = Boolean(manager && agents.some(a => a.id === manager.agent.id));
 
     const systemPromptFor = (mode: 'tools' | 'tags', phase?: 'plan') => buildSystemPrompt({
-      handbook, notes, isFollowUp, phase,
+      handbook, notes, isFollowUp, phase, projectProblems,
       canAskManager: mode === 'tools' && canAskManager,
       agent, task, rootTask, parent: manager, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents,
       projectHistory: projectHistoryOf(rootTask, agents, taskIndex),
@@ -270,7 +273,12 @@ export const executeTask = async (agent: Agent, task: TaskItem, agents: Agent[],
           describe: input => `saved file: ${text(input.path)}`,
           run: async input => {
             if (typeof input.content !== 'string') throw new Error('content is missing.');
-            return { output: `Saved ${await saveFile(text(input.path), input.content)}.` };
+            // Replacing a whole file is where a colleague's work gets lost: say what went missing
+            const project = await projectReady();
+            const previous = viewProjectFile(project, normalizeFilename(text(input.path), project) || '')?.text;
+            const written = await saveFile(text(input.path), input.content);
+            const lost = previous ? describeLostWork(written, previous, input.content) : '';
+            return { output: `Saved ${written}.${lost ? `\n${lost}` : ''}` };
           },
         },
         {

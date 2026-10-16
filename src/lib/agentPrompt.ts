@@ -79,9 +79,29 @@ export interface PromptContext {
   canAskManager: boolean;
   /** This is a manager looking at what the team delivered. */
   isFollowUp: boolean;
+  /** Problems an automatic scan found between the project's files (follow-ups and reviews only). */
+  projectProblems: string[];
   /** 'plan': only write the plan for the client to approve; nothing is carried out yet. */
   phase?: 'plan';
 }
+
+/**
+ * What the final review must do. A reviewer told only to "compare with the request" tends to
+ * skim and approve, so it checks item by item, against the files, and how they fit together.
+ */
+const reviewInstructions = (howToFix: string) =>
+  `This is the final review of the whole project. Work through it in this order:\n` +
+  `1. List everything the client's request and the approved plan ask for.\n` +
+  `2. Check each item against the actual files. Open them: do not rely on what colleagues said they did.\n` +
+  `3. Check that the files work together: every page uses the stylesheet and scripts it needs and links to the other pages, ` +
+  `the content colleagues wrote is the content on the pages, code only calls functions that exist, and the program runs from its entry point.\n` +
+  `If anything is missing, incomplete, inconsistent or would not run, ${howToFix}. Leave files that are already correct untouched.\n` +
+  `In your summary, give the final assessment for the client: each item from step 1 marked ✓ (delivered) or ✗ (still missing), how to run or use the project, and any known gaps.`;
+
+/** Problems found by reading the files, given to whoever checks the team's work. */
+const problemsSection = (problems: string[]) =>
+  `An automatic check of the project found these problems between its files. Fix every one, or explain in your summary why it is not a problem:\n` +
+  problems.map(p => `- ${p}`).join('\n');
 
 /** File contents shown up front in tools mode; anything else is read on demand. */
 const TOOLS_FILE_CONTEXT_CHARS = 6000;
@@ -91,7 +111,7 @@ const TOOLS_FILE_CONTEXT_CHARS = 6000;
  * the client's request, the manager's plan, what colleagues already finished, and the real project files.
  */
 export const buildSystemPrompt = (ctx: PromptContext) => {
-  const { agent, task, rootTask, parent, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents, projectHistory, roleInstructions, canAsk, meetingPlan, mode, webAccess, canRunChecks, attachments, handbook, notes, canAskManager, isFollowUp, phase } = ctx;
+  const { agent, task, rootTask, parent, tree, slug, namesProject, isReview, colleagues, existingFiles, fileContents, projectHistory, roleInstructions, canAsk, meetingPlan, mode, webAccess, canRunChecks, attachments, handbook, notes, canAskManager, isFollowUp, projectProblems, phase } = ctx;
   const tools = mode === 'tools' && phase !== 'plan';
   const sections: string[] = [];
 
@@ -211,10 +231,12 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
   if (isFollowUp) {
     sections.push(
       `The colleagues you delegated to have finished. Their results are listed above, and the files are in the project. ` +
-      `Check that their work fits together and delivers what you planned. Fix small gaps yourself. ` +
+      `Check that their work fits together and delivers what you planned: open the files rather than relying on what colleagues said they did. ` +
+      `Fix small gaps yourself. ` +
       (colleagues.length > 0 ? `If a larger piece is missing or wrong, you may delegate once more; this is the last round. ` : '') +
       `If everything is in order, change nothing and say so in your summary.`
     );
+    if (projectProblems.length > 0) sections.push(problemsSection(projectProblems));
   }
 
   if (tools) {
@@ -233,11 +255,8 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
     );
 
     if (isReview) {
-      sections.push(
-        `This is the final review of the whole project. Read the project files and compare them with the client's original request. ` +
-        `If anything is missing, incomplete, inconsistent or would not run, fix it now. Leave files that are already correct untouched. ` +
-        `In your summary, give the final assessment for the client: what was delivered, how to run or use it, and any known gaps.`
-      );
+      sections.push(reviewInstructions('fix it now'));
+      if (projectProblems.length > 0) sections.push(problemsSection(projectProblems));
     }
 
     if (colleagues.length > 0) {
@@ -290,11 +309,8 @@ export const buildSystemPrompt = (ctx: PromptContext) => {
   );
 
   if (isReview) {
-    sections.push(
-      `This is the final review of the whole project. Compare the project files with the client's original request. ` +
-      `If anything is missing, incomplete, inconsistent or would not run, fix it now by writing the complete corrected files. Leave files that are already correct untouched. ` +
-      `In your summary, give the final assessment for the client: what was delivered, how to run or use it, and any known gaps.`
-    );
+    sections.push(reviewInstructions('fix it now by writing the complete corrected files'));
+    if (projectProblems.length > 0) sections.push(problemsSection(projectProblems));
   }
 
   if (colleagues.length > 0) {
