@@ -9,7 +9,7 @@ Everyone taking part is expected to follow the [code of conduct](CODE_OF_CONDUCT
 - **A bug or a small fix:** open a pull request directly.
 - **A new feature or a larger change:** open an issue first and describe what you want to build, so we can agree on the approach before you spend time on it.
 - **A security problem:** do not open an issue. See [SECURITY.md](SECURITY.md).
-- **A version made for your company:** that is paid work rather than a contribution; see [the README](README.md#need-a-custom-version).
+- **A version made for your company:** that is paid work rather than a contribution; see [the README](README.md#work-with-me).
 
 ## Setting up
 

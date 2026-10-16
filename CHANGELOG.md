@@ -10,6 +10,8 @@ Installers for each release are on the [Releases page](https://github.com/hussei
 - An automatic check of how a project's files fit together: links and imports to files or functions that do not exist, pages that ignore the project's stylesheet or that no page links to, a Python entry point placed before the functions it calls. The manager's follow-up and the final review are told what it finds, and the report lists anything left.
 - When an employee replaces a whole file and functions or classes it defined disappear, they are told which ones, so they can put them back.
 
+- An About section in Settings, with the version and links to the documentation, release notes, source code and problem reports.
+
 ### Changed
 - The final review works through a checklist: everything the request and the plan asked for, checked against the files, with ✓ or ✗ for each in the summary.
 

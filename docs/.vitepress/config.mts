@@ -20,7 +20,7 @@ export default withMermaid(defineConfig({
     nav: [
       { text: 'Guide', link: '/getting-started' },
       { text: 'Download', link: `${repo}/releases/latest` },
-      { text: 'Custom builds', link: '/custom-builds' },
+      { text: 'Work with me', link: '/work-with-me' },
     ],
     sidebar: [
       {
