@@ -31,6 +31,7 @@ body:
       options:
         - Desktop app (macOS)
         - Desktop app (Windows)
+        - Desktop app (Linux)
         - npm run dev / npm start
         - Docker
     validations:
@@ -39,7 +40,7 @@ body:
     id: version
     attributes:
       label: Version or commit
-      placeholder: 0.1.0, or the output of `git rev-parse --short HEAD`
+      placeholder: 0.4.0, or the output of `git rev-parse --short HEAD`
     validations:
       required: true
   - type: input

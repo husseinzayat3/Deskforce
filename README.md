@@ -10,7 +10,7 @@
 [![Latest release](https://img.shields.io/github/v/release/husseinzayat3/Deskforce)](https://github.com/husseinzayat3/Deskforce/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/husseinzayat3/Deskforce/total)](https://github.com/husseinzayat3/Deskforce/releases)
 [![License: MIT](https://img.shields.io/github/license/husseinzayat3/Deskforce)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/husseinzayat3/Deskforce?style=flat)](https://github.com/husseinzayat3/Deskforce/stargazers)
+[![Stars](https://img.shields.io/github/stars/husseinzayat3/Deskforce?style=flat)](https://github.com/husseinzayat3/Deskforce)
 
 ![Deskforce demo: the CEO plans a bakery website, the team builds it, and the result opens in a preview](docs/demo.gif)
 
