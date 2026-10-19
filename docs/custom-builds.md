@@ -19,4 +19,4 @@ Deskforce is free and open source, and you can use it as it is. If you want it s
 
 ## Get in touch
 
-[**Book a free 15-minute call**](https://calendly.com/husseinzayat10) · **Hussein Zayat** — [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office) · [husseinzayat.it](https://husseinzayat.it)
+[**Book a free 30-minute call**](https://calendly.com/husseinzayat10) · **Hussein Zayat** — [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office) · [husseinzayat.it](https://husseinzayat.it)

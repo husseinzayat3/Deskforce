@@ -24,7 +24,7 @@ Deskforce is how I like to build AI: people stay in control, costs are measured,
 
 ## How it works
 
-1. **A free 15-minute call:** what you need, and whether I'm the right fit.
+1. **A free 30-minute call:** what you need, and whether I'm the right fit.
 2. **A proposal within two working days:** scope, deliverables, timeline and price.
 3. **Weekly updates** while I work: what's done, what's next, what needs a decision.
 4. **Hand-over:** the code, the documentation, and a session with your team.
@@ -33,4 +33,4 @@ I'm **available part-time**, alongside my current engagement. I work remotely an
 
 ## Get in touch
 
-[**Book a free 15-minute call**](https://calendly.com/husseinzayat10) · [husseinzayat.it](https://husseinzayat.it) · [LinkedIn](https://linkedin.com/in/hussein-zayat-6730b6161) · [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Working%20together)
+[**Book a free 30-minute call**](https://calendly.com/husseinzayat10) · [husseinzayat.it](https://husseinzayat.it) · [LinkedIn](https://linkedin.com/in/hussein-zayat-6730b6161) · [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Working%20together)
