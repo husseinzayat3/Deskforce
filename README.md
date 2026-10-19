@@ -103,14 +103,14 @@ Frameworks are the right choice when you are building agents into your own produ
 - **Security:** [the security model](docs/security.md) · report a vulnerability via [SECURITY.md](SECURITY.md)
 - **License:** [MIT](LICENSE) © 2026 Hussein Zayat — free to use, change and redistribute, including commercially. The default floorplan and avatars in `public/` were generated with Google Gemini and are distributed under the same terms.
 
-## Need a custom version?
+## Work with me
 
-Deskforce is free and open source. If you want it shaped around your company or your clients, I build customised versions:
+Deskforce is built by **Hussein Zayat**, a backend & AI engineering consultant (.NET, Azure, LLMs) and technical lead. If your team is planning AI features or agents, needs a backend that scales, or wants Deskforce built around its own roles, tools and models, I can help:
 
-- **Your team and workflow** — your own roles, instructions, approval steps and reporting.
-- **Your tools** — integrations with the systems you already use: ticketing, CRM, chat, internal APIs, your git host.
-- **Your models** — other AI providers, private or self-hosted models, your own pricing and spending rules.
-- **Your brand** — a custom floorplan, avatars, name and look, packaged as your own desktop app.
-- **Your infrastructure** — a hosted, multi-user version with logins and permissions, deployed where you need it.
+- **AI assessment & workshop:** where AI pays off in your work, with a working prototype and a roadmap
+- **AI features & agents:** production-ready AI in your product or processes
+- **Backend & cloud engineering:** .NET and Azure, modernisation, CI/CD
+- **Technical leadership & consultancy:** reviews, part-time tech lead, AI adoption in dev teams
+- **Deskforce for your team:** [custom builds](https://husseinzayat3.github.io/Deskforce/custom-builds), integrations, a hosted team edition
 
-Tell me what you need and I will reply with a proposal: **Hussein Zayat** — [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office) · [husseinzayat.it](https://husseinzayat.it)
+[**Book a free 15-minute call**](https://calendly.com/husseinzayat10) · [more about how I work](https://husseinzayat3.github.io/Deskforce/work-with-me) · [husseinzayat.it](https://husseinzayat.it)

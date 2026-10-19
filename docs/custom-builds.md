@@ -1,6 +1,6 @@
 # Custom builds
 
-Deskforce is free and open source, and you can use it as it is. If you want it shaped around your company or your clients, I build customised versions.
+Deskforce is free and open source, and you can use it as it is. If you want it shaped around your company or your clients, I build customised versions. (For AI, backend or leadership work beyond Deskforce, see [Work with me](work-with-me.md).)
 
 ## What I can build for you
 
@@ -19,4 +19,4 @@ Deskforce is free and open source, and you can use it as it is. If you want it s
 
 ## Get in touch
 
-**Hussein Zayat** — [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office) · [husseinzayat.it](https://husseinzayat.it)
+[**Book a free 15-minute call**](https://calendly.com/husseinzayat10) · **Hussein Zayat** — [husseinzayat10@hotmail.com](mailto:husseinzayat10@hotmail.com?subject=Custom%20office) · [husseinzayat.it](https://husseinzayat.it)
