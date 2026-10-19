@@ -113,4 +113,4 @@ Deskforce is built by **Hussein Zayat**, a backend & AI engineering consultant (
 - **Technical leadership & consultancy:** reviews, part-time tech lead, AI adoption in dev teams
 - **Deskforce for your team:** [custom builds](https://husseinzayat3.github.io/Deskforce/custom-builds), integrations, a hosted team edition
 
-[**Book a free 15-minute call**](https://calendly.com/husseinzayat10) · [more about how I work](https://husseinzayat3.github.io/Deskforce/work-with-me) · [husseinzayat.it](https://husseinzayat.it)
+[**Book a free 30-minute call**](https://calendly.com/husseinzayat10) · [more about how I work](https://husseinzayat3.github.io/Deskforce/work-with-me) · [husseinzayat.it](https://husseinzayat.it)
