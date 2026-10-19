@@ -85,16 +85,17 @@ More: [How it works](docs/how-it-works.md) · [Slack](docs/slack.md) · [Checks]
 
 ## How it compares
 
-| | Deskforce | Agent frameworks<br/><sub>CrewAI, AutoGen, LangGraph</sub> | AI software-company projects<br/><sub>ChatDev, MetaGPT</sub> |
+| | Deskforce | Agent frameworks<br/><sub>CrewAI, LangGraph, Microsoft Agent Framework</sub> | Multi-agent platforms<br/><sub>ChatDev 2.0, MetaGPT / MGX</sub> |
 | --- | --- | --- | --- |
-| What it is | An app you install and use | Libraries you build agents with in code | Research projects you run from Python |
-| Getting started | Download, add a key | Write and host your own code | Set up a Python environment |
-| Seeing the work | Live floorplan, task tree, live output | Logs and tracing tools | Logs, plus replay tools |
-| Spending control | Plan approval, task budgets, monthly cap | Yours to build | Not the focus |
-| Undo | One click, per task | Yours to build | Not the focus |
-| Use from chat | Slack | Yours to build | — |
+| What it is | A desktop app (macOS, Windows, Linux) or a Docker image | Libraries for building agents into your own code, with visual builders (CrewAI Studio, LangGraph Studio) | ChatDev: a self-hosted, zero-code workflow builder · MetaGPT: a Python library, with MGX as a hosted service |
+| Getting started | Download, add a key | Write or design the agents, then run and host them | Run a Python backend and a web frontend (ChatDev) or sign up (MGX) |
+| Seeing the work | An office floorplan with live output, a task tree and a report per request | Traces, logs and execution timelines | A workflow canvas and run logs (ChatDev) |
+| Control built in | A plan with a cost estimate to approve, budgets per task, a monthly cap | Human-in-the-loop steps and checkpoints you add to your code | Human steps you add to a workflow (ChatDev) |
+| Undo | Every task is a git commit of the files it changed: undo with one click | Rewind the agent's state to a checkpoint (LangGraph); files and other effects are up to you | Depends on the workflow |
 
-Frameworks are the right choice when you are building agents into your own product. Deskforce is for getting work done with a team of agents today, and seeing what they do.
+Frameworks are the right choice when you are building agents into your own product, and ChatDev when you want to design your own workflows. Deskforce is for getting work done with a team of agents today, on your own machine, and seeing what they do.
+
+<sub>Compared in October 2026. These projects move fast: if something here is out of date, please [open an issue](https://github.com/husseinzayat3/Deskforce/issues/new/choose).</sub>
 
 ## Documentation
 
